@@ -176,8 +176,8 @@ private:
         uint32_t subgroupId = 0;
         bool isSubgroupOwned = false;
 
-        uint32_t failedGroups = 0;
-        uint32_t failedSubgroups = 0;
+        uint32_t numFailedGroups = 0;
+        uint32_t numFailedSubgroups = 0;
         uint64_t executingMask = 0;
 
         WakeThreadsCallback wakeCb;
@@ -191,7 +191,6 @@ private:
 #if SI_TG_ENABLE_DEBUG_TIMED_EVENTS
         Vector<TimedEvent> timedEvents;
 #endif
-
         [[maybe_unused]] char _falseSharingPad[128];
 
         ~ThreadCtx();
@@ -199,9 +198,11 @@ private:
         template<Event Evt, typename ...Args>
         void addEvent(int64_t v, Args &&... args);
     };
+
     Vector<ThreadCtx> threadCtxArray;
     [[maybe_unused]] char _falseSharingPad[128];
     std::atomic<uint64_t> sleepingThreadsMask = 0;
+
 #if SI_TG_ENABLE_DEBUG_TIMED_EVENTS
     std::atomic<int64_t> curTimedEventIdx;
 #endif
@@ -210,7 +211,8 @@ private:
     uint64_t gatherAndWakeThreads(ThreadCtx & SI_TG_RESTRICT this_ctx, int need_count);
 
     bool tryEnterSubgroup(ThreadCtx & SI_TG_RESTRICT ctx, uint32_t group_id, uint32_t subgroup_id, uint64_t &executing, bool loop);
-    std::pair<uint32_t, uint32_t> tryAcquireVarTask(ThreadCtx & SI_TG_RESTRICT ctx, uint32_t group_id, uint32_t subgroup_id);
+    struct VarTaskIdAndCount { uint32_t cnt; uint32_t id; };
+    VarTaskIdAndCount tryAcquireVarTask(ThreadCtx & SI_TG_RESTRICT ctx, uint32_t group_id, uint32_t subgroup_id);
     void leaveSubgroup(ThreadCtx & SI_TG_RESTRICT ctx, uint32_t group_id, uint32_t subgroup_id);
     bool doSubGroup(ThreadCtx & SI_TG_RESTRICT ctx, uint32_t group_id, uint32_t subgroup_id);
     bool doVarTask(ThreadCtx & SI_TG_RESTRICT ctx, uint32_t subgroup_id, uint32_t task_id, uint32_t var_task_idx);

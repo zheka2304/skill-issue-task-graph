@@ -83,7 +83,7 @@ void execute_task_graph(CompiledTaskGraph &graph, int thread_num = 4)
     pool.windUpThreads(thread_num);
 
     std::vector<uint64_t> times;
-    Array<int64_t, uint8_t(si::tg::ThreadedTaskGraphExecutor::Event::NUM)> stats = {0};
+    [[maybe_unused]] Array<int64_t, uint8_t(si::tg::ThreadedTaskGraphExecutor::Event::NUM)> stats = {0};
 
     for (int i = 0; i < 1000; i++)
     {
@@ -111,14 +111,11 @@ void execute_task_graph(CompiledTaskGraph &graph, int thread_num = 4)
         }
         sie::logger::debug("exec", "time: max=%.3lfms min=%.3lfms avg=%.3lfms", double(maxNS) * 1e-6, double(minNS) * 1e-6, double(totalNS) / double(times.size()) * 1e-6);
     }
-    /*
-    debug("validate", "timed events:");
-    for (const auto &evt : executor.getAllTimedEvents())
-        debug("validate", "  %s %i", ThreadedTaskGraphExecutor::EVENT_NAMES[int(evt.event)], evt.ids[0]);
-    */
+#if SI_TG_ENABLE_DEBUG_STAT_EVENTS
     debug("validate", "stats:");
     for (int i = 0; i < int(ThreadedTaskGraphExecutor::Event::NUM); i++)
         debug("validate", "  %s %lli", ThreadedTaskGraphExecutor::EVENT_NAMES[i], stats[i]);
+#endif
 }
 
 int main()

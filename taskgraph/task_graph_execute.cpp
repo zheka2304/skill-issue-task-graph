@@ -1,6 +1,42 @@
 #include "task_graph_execute.h"
 
 
+namespace si::tg::internal
+{
+
+// internal::BitIter iter(word);
+// while (iter.step())
+//   iter.idx();
+struct BitIter
+{
+    explicit BitIter(uint64_t w) : word(w), idx_(-1) {}
+
+    bool step()
+    {
+        if (idx_ >= 63)
+            return false;
+        idx_++;
+        if ((word >> idx_) == 0)
+            return false;
+#ifdef SI_TG_FIRST_SET_BIT
+        idx_ += SI_TG_FIRST_SET_BIT(word >> idx_);
+#else
+        while (word && (((word >> idx_) & 1u) == 0))
+            idx_++;
+#endif
+        return true;
+    }
+
+    uint64_t idx() const
+    { return idx_ < 0 ? 0 : idx_; }
+
+private:
+    uint64_t word;
+    int64_t idx_;
+};
+
+}
+
 namespace si::tg
 {
 
@@ -126,16 +162,16 @@ ThreadedTaskGraphExecutor::ThreadResult ThreadedTaskGraphExecutor::doThread(int 
     const uint32_t maxFailedGroups = graph.allGroups.size() + 1;
     const uint32_t maxFailedSubGroups = 64;
 
-    ctx.failedGroups = 0;
-    while (ctx.failedGroups < maxFailedGroups)
+    ctx.numFailedGroups = 0;
+    while (ctx.numFailedGroups < maxFailedGroups)
     {
-        ctx.failedSubgroups = 0;
+        ctx.numFailedSubgroups = 0;
         ctx.addEvent<Event::THREAD_START_GROUP>(1, ctx.groupId);
-        while (ctx.failedSubgroups < maxFailedSubGroups)
+        while (ctx.numFailedSubgroups < maxFailedSubGroups)
         {
             if (!ctx.isSubgroupOwned && !doGroupUntilSubgroupEnter(ctx, true))
             {
-                ctx.failedSubgroups = maxFailedSubGroups;
+                ctx.numFailedSubgroups = maxFailedSubGroups;
                 break; // nothing pending
             }
             if (!ctx.isSubgroupOwned)
@@ -148,9 +184,9 @@ ThreadedTaskGraphExecutor::ThreadResult ThreadedTaskGraphExecutor::doThread(int 
                 leaveSubgroup(ctx, ctx.groupId, ctx.subgroupId);
             ctx.isSubgroupOwned = false;
         }
-        if (ctx.failedSubgroups >= maxFailedSubGroups)
+        if (ctx.numFailedSubgroups >= maxFailedSubGroups)
         {
-            ctx.failedGroups++;
+            ctx.numFailedGroups++;
             ctx.groupId++;
             ctx.groupId %= graph.allGroups.size();
             continue;
@@ -203,11 +239,11 @@ bool ThreadedTaskGraphExecutor::doGroupUntilSubgroupEnter(ThreadCtx & SI_TG_REST
         }
         if (!ctx.isSubgroupOwned)
         {
-            ctx.failedSubgroups++;
+            ctx.numFailedSubgroups++;
             continue;
         }
-        ctx.failedGroups = 0;
-        ctx.failedSubgroups = 0;
+        ctx.numFailedGroups = 0;
+        ctx.numFailedSubgroups = 0;
         break;
     }
     return true;
@@ -303,7 +339,7 @@ bool ThreadedTaskGraphExecutor::tryEnterSubgroup(ThreadCtx & SI_TG_RESTRICT ctx,
     return false;
 }
 
-std::pair<uint32_t, uint32_t> ThreadedTaskGraphExecutor::tryAcquireVarTask(ThreadCtx & SI_TG_RESTRICT ctx, uint32_t /* group_id */, uint32_t subgroup_id)
+ThreadedTaskGraphExecutor::VarTaskIdAndCount ThreadedTaskGraphExecutor::tryAcquireVarTask(ThreadCtx & SI_TG_RESTRICT ctx, uint32_t /* group_id */, uint32_t subgroup_id)
 {
     CompiledTaskGraph & SI_TG_RESTRICT graph = *graphPtr;
     CompiledTaskGraph::TaskSubGroupState& subgroup = graph.allSubGroupsState[subgroup_id];
@@ -319,10 +355,10 @@ std::pair<uint32_t, uint32_t> ThreadedTaskGraphExecutor::tryAcquireVarTask(Threa
         if (subgroup.curVarTask.compare_exchange_strong(curVarTask, newVarTask, std::memory_order_acq_rel))
         {
             ctx.addEvent<Event::TASK_VAR_ACQUIRE>(1, varTaskIdx);
-            return {varTaskCnt, varTaskIdx};
+            return VarTaskIdAndCount{varTaskCnt, varTaskIdx};
         }
     }
-    return {0, ~0u};
+    return VarTaskIdAndCount{0, ~0u};
 }
 
 void ThreadedTaskGraphExecutor::leaveSubgroup(ThreadCtx & SI_TG_RESTRICT ctx, uint32_t group_id, uint32_t subgroup_id)
