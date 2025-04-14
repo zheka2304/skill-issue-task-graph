@@ -309,10 +309,9 @@ bool ThreadedTaskGraphExecutor::doSubGroup(ThreadCtx & __restrict ctx, uint32_t 
                 // wind up variadic task
                 CompiledTaskGraph::TaskSubGroupState &subgroupState = graph.allSubGroupsState[subgroup_id];
                 SI_TG_ASSERT(subgroupState.remainingVarTasks.load(std::memory_order_relaxed) == 0);
-                subgroupState.remainingVarTasks.fetch_add(taskCnt, std::memory_order_relaxed);
-                uint64_t expected = 0;
-                subgroupState.curVarTask.compare_exchange_strong(expected, (uint64_t(taskId) << uint64_t(32u)) | uint64_t(taskCnt), std::memory_order_acq_rel);
-                SI_TG_ASSERT(expected == 0);
+                subgroupState.remainingVarTasks.store(taskCnt, std::memory_order_relaxed);
+                SI_TG_ASSERT(subgroupState.curVarTask.load(std::memory_order_relaxed) == 0);
+                subgroupState.curVarTask.store((uint64_t(taskId) << uint64_t(32u)) | uint64_t(taskCnt), std::memory_order_release);
                 groupState.pending.fetch_or(subgroupBit, std::memory_order_acq_rel);
                 ctx.addEvent<Event::TASK_VAR_WIND_UP>(1, taskId); // after setting task state
                 return false; // not owned

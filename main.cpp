@@ -20,6 +20,15 @@ void assert_handler(const char *str)
     __debugbreak();
 }
 
+void some_work()
+{
+    OPTICK_EVENT("test_task");
+    volatile int x = 0;
+    volatile int y = 0;
+    for (int i = 0; i < 1000; i++)
+        x = y;
+}
+
 template<int GroupId>
 [[clang::optnone]]
 void append_random_task_graph(si::tg::TaskGraph &graph, int sz, int res_ofs)
@@ -32,13 +41,7 @@ void append_random_task_graph(si::tg::TaskGraph &graph, int sz, int res_ofs)
         TaskId id = graph.addTask({
             .taskFn = +[](void* data, int idx) {
                 dbgTasksDone.fetch_add(1, std::memory_order_relaxed);
-                /*
-                OPTICK_EVENT("test_task");
-                volatile int x = 0;
-                volatile int y = 0;
-                for (int i = 0; i < 1000; i++)
-                    x = y;
-                */
+                // some_work()
                 // printf("    [%i] test task %i (%i)\n", GroupId, (int) (intptr_t) data, idx);
             },
             .taskVarFn = nullptr,
@@ -69,7 +72,7 @@ void init_random_task_graph(TaskGraph &graph)
     // append_random_task_graph(graph, 1000, 190);
 }
 
-void execute_task_graph(CompiledTaskGraph &graph, int thread_num = 4)
+void execute_task_graph(CompiledTaskGraph &graph, int thread_num = 8)
 {
     sie::logger::debug("exec", "start");
     sie::logger::flush_default_log();
@@ -82,9 +85,8 @@ void execute_task_graph(CompiledTaskGraph &graph, int thread_num = 4)
         OPTICK_EVENT()
         dbgTasksDone = 0;
         pool.execute(&graph);
-        SI_TG_ASSERT(dbgTasksDone == 10000);
+        SI_TG_ASSERT(dbgTasksDone == 1000);
     }
-    sie::logger::debug("exec", "done");
 
     /*
     debug("validate", "timed events:");
@@ -103,10 +105,10 @@ int main()
     OPTICK_START_CAPTURE();
 
     TaskGraph graph1;
-    // graph1.addTask({.taskFn = +[] (void*, int) {} });
-    append_random_task_graph<1>(graph1, 1000, 0);
+    graph1.addTask({.taskFn = +[] (void*, int i) { dbgTasksDone++; }, .taskVarFn = +[] (void*) { return 100; } });
+    // append_random_task_graph<1>(graph1, 1000, 0);
     TaskGraph graph2;
-    // append_random_task_graph<2>(graph2, 1000, 0);
+    append_random_task_graph<2>(graph2, 1000, 0);
     TaskGraph graph;
     {
         auto t1 = graph.addSubGraphTask({.taskVarFn = +[] (void*) { return 10; }}, &graph1);
