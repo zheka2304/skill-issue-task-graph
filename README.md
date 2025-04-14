@@ -11,7 +11,7 @@ Features:
 - Putting threads to sleep and waking them
 - [Planned] Thread affinity mask for tasks
 
-Note that this is not a production-ready solution, but rather a project, I've made for fun. It must be properly tested and benchmarked before using it for real.
+**NOTE:** This is not a production-ready solution, but rather a project, I've made for fun. It must be properly tested and benchmarked before using it for real.
 
 ## Installation
 
