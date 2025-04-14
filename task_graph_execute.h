@@ -104,7 +104,7 @@ struct ThreadedTaskGraphExecutor
     };
 
     void prepareForExecution(int thread_num);
-    ThreadResult doThread(int thread_id, const std::function<void(int)> &wake_threads);
+    ThreadResult doThread(int thread_id, const WakeThreadsCallback &wake_threads);
 
     enum class Event : uint8_t
     {
@@ -186,12 +186,31 @@ struct ThreadedTaskGraphExecutor
 
 private:
 
+    struct ThreadOwnershipLock
+    {
+        static constexpr uint32_t STATE_NONE = 0;
+        static constexpr uint32_t STATE_WAITING = 1;
+        static constexpr uint32_t STATE_OWNED = 2;
+
+        std::atomic<uint32_t> state = STATE_NONE;
+        char _falseSharingPad[60];
+        ThreadOwnershipLock() = default;
+        ThreadOwnershipLock(ThreadOwnershipLock &&) {}
+    };
+
     struct ThreadCtx
     {
         int threadId;
+
         uint32_t groupId = 0;
+        uint32_t subgroupId = 0;
+        bool isSubgroupOwned = false;
+
+        bool isWakeAttemptPending = false;
         uint32_t failedGroups = 0;
         uint32_t failedSubgroups = 0;
+        uint64_t executingMask = 0;
+
         ThreadedTaskGraphExecutor *executor;
 
         std::vector<uint64_t> subGroupMasksToExecuteNext;
@@ -199,6 +218,7 @@ private:
         std::array<int64_t, uint8_t(Event::NUM)> eventCnt = {0};
         std::vector<TimedEvent> timedEvents;
 
+        ThreadOwnershipLock ownershipLock;
         char _falseSharingPad[128];
 
         template<Event Evt, typename ...Args>
@@ -221,13 +241,22 @@ private:
                 else if (sizeof...(args) == 4)
                     sie::logger::debug("exec", "[%i] %s %i %i %i %i", threadId, EVENT_NAMES[int(Evt)], int(args)...);
             }
+#if SI_TG_ENABLE_DEBUG_STAT_EVENTS
             eventCnt[int(Evt)] += v;
+#endif
+#if SI_TG_ENABLE_DEBUG_TIMED_EVENTS
             if constexpr (Evt == Event::TASK_EXECUTE_START || Evt == Event::TASK_EXECUTE_END)
                 timedEvents.push_back(TimedEvent{ Evt, executor->curTimedEventIdx.fetch_add(1, std::memory_order_relaxed), args... });
+#endif
         }
     };
     Vector<ThreadCtx> threadCtxArray;
+#if SI_TG_ENABLE_DEBUG_TIMED_EVENTS
     std::atomic<int64_t> curTimedEventIdx;
+#endif
+
+    bool doGroupUntilSubgroupEnter(ThreadCtx & __restrict ctx, bool allow_var_tasks);
+    uint64_t gatherThreadsToWake();
 
     bool tryEnterSubgroup(ThreadCtx &ctx, uint32_t group_id, uint32_t subgroup_id, uint64_t &executing, bool loop);
     std::pair<uint32_t, uint32_t> tryAcquireVarTask(ThreadCtx &ctx, uint32_t group_id, uint32_t subgroup_id);
@@ -260,7 +289,7 @@ private:
     std::vector<std::thread> threads;
     std::condition_variable condVar;
     std::mutex condVarMutex;
-    std::atomic<int64_t> wakeThreads = 0;
+    std::atomic<uint64_t> wakeThreadsMask = 0;
     bool running = false;
 };
 

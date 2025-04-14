@@ -12,6 +12,30 @@
 namespace si::tg::internal
 {
 
+// internal::BitIter iter(word);
+// while (iter.step())
+//   iter.idx();
+struct BitIter
+{
+    explicit BitIter(uint64_t w) : word(w), idx_(-1) {}
+
+    bool step()
+    {
+        if (idx_ >= 63)
+            return false;
+        idx_++;
+        if ((word >> idx_) == 0)
+            return false;
+        idx_ += SI_TG_FIRST_SET_BIT(word >> idx_);
+        return true;
+    }
+    uint64_t idx() const { return idx_ < 0 ? 0 : idx_; }
+
+private:
+    uint64_t word;
+    int64_t idx_;
+};
+
 template<typename F>
 uint64_t iter_set_bits(uint64_t word, F&& f, uint64_t offs = 0)
 {

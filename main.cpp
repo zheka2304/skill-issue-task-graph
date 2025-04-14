@@ -23,7 +23,11 @@ void append_random_task_graph(si::tg::TaskGraph &graph, int sz, int res_ofs)
         TaskId id = graph.addTask({
             .taskFn = +[](void* data, int idx) {
                 OPTICK_EVENT("test_task");
-                printf("    [%i] test task %i (%i)", GroupId, (int) (intptr_t) data, idx);
+                static volatile int x = 0;
+                static volatile int y = 0;
+                for (int i = 0; i < 1000; i++)
+                    x = y;
+                // printf("    [%i] test task %i (%i)\n", GroupId, (int) (intptr_t) data, idx);
             },
             .taskVarFn = nullptr,
             .userData = (void*) (i + idxOfs)
@@ -34,9 +38,9 @@ void append_random_task_graph(si::tg::TaskGraph &graph, int sz, int res_ofs)
     {
         if (i >= sz - 1)
             continue;
-        for (int n = 0; n < 10; n++)
+        for (int n = 0; n < 0; n++)
             graph.setNext(tasks[i], tasks[i + 1 + rand() % (sz - i - 1)]);
-        for (int n = 0; n < 10; n++)
+        for (int n = 0; n < 3; n++)
         {
             uint64_t res = res_ofs + rand() % 200;
             si::tg::ResourceUsage usage = rand() % 5 == 0 ? si::tg::ResourceUsage::LOCKING : si::tg::ResourceUsage::SHARED;
@@ -84,17 +88,17 @@ int main()
     OPTICK_START_CAPTURE();
 
     TaskGraph graph1;
-    append_random_task_graph<1>(graph1, 50, 0);
+    append_random_task_graph<1>(graph1, 1000, 0);
     TaskGraph graph2;
-    append_random_task_graph<2>(graph2, 50, 0);
+    append_random_task_graph<2>(graph2, 500, 0);
     TaskGraph graph3;
     append_random_task_graph<3>(graph3, 100, 0);
     TaskGraph graph;
     {
-        auto t1 = graph.addSubGraphTask({.taskVarFn = +[] (void*) { return 2; }}, &graph1);
-        auto t2 = graph.addSubGraphTask({}, &graph2);
+        auto t1 = graph.addSubGraphTask({.taskVarFn = +[] (void*) { return 10; }}, &graph1);
+        // auto t2 = graph.addSubGraphTask({}, &graph2);
         // auto t3 = graph.addSubGraphTask({.taskVarFn = +[] (void*) { return 5; }}, &graph3);
-        graph.setNext(t1, t2);
+        // graph.setNext(t1, t2);
     }
 
     PrebuiltTaskGraph prebuiltGraph;
