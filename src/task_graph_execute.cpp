@@ -113,6 +113,8 @@ void ThreadedTaskGraphExecutor::getEventCountStats([[maybe_unused]] Array<int64_
 
 void ThreadedTaskGraphExecutor::prepareForExecution(int thread_num)
 {
+    SI_TG_ASSERT(graphPtr);
+    SI_TG_ASSERT(graphPtr->isValid);
     SI_TG_PROFILE_INTERNAL("prepare_execution")
     sleepingThreadsMask.store(0, std::memory_order_relaxed);
     threadCtxArray.resize(0);
@@ -406,8 +408,8 @@ bool ThreadedTaskGraphExecutor::doSubGroup(ThreadCtx & SI_TG_RESTRICT ctx, uint3
 
             int taskCnt = 1;
             void* userData = task.taskData.userData;
-            if (task.taskData.taskVarFn)
-                taskCnt = task.taskData.taskVarFn(userData);
+            if (task.taskData.taskNumFn)
+                taskCnt = task.taskData.taskNumFn(userData);
             if (taskCnt < 2 || !task.allowToRunInParallelWithItself)
             {
                 ctx.addEvent<Event::TASK_EXECUTE_START>(taskCnt, taskId);
@@ -491,7 +493,7 @@ void ThreadedTaskGraphExecutor::doSubGraphTask(ThreadCtx& ctx, uint32_t task_id)
         const bool needReset = remaining == -2;
         if (remaining < 0)
         {
-            remaining = task.taskData.taskVarFn ? task.taskData.taskVarFn(task.taskData.userData) : 1;
+            remaining = task.taskData.taskNumFn ? task.taskData.taskNumFn(task.taskData.userData) : 1;
             if (remaining > 0)
                 ctx.addEvent<Event::SUBGRAPH_ENTER>(1, subgraphEntryTask);
             else

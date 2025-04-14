@@ -78,6 +78,7 @@ struct CompiledTaskGraph
         }
     };
 
+    bool isValid = false;
     Vector<TaskGroup> allGroups;
     Vector<TaskGroupState> allGroupsState;
     Vector<TaskSubGroup> allSubGroups;

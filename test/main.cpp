@@ -52,7 +52,7 @@ struct TestTask
         TaskData data;
         data.userData = this;
         data.taskFn = +[] (void *self, int idx) { static_cast<TestTask *>(self)->doTask(idx); };
-        data.taskVarFn = +[] (void *self) { return static_cast<TestTask *>(self)->getVarTaskCnt(); };
+        data.taskNumFn = +[] (void *self) { return static_cast<TestTask *>(self)->getVarTaskCnt(); };
         return data;
     }
 
@@ -81,7 +81,6 @@ struct TestTaskGraph
     std::deque<TaskGraph> taskGraphs;
     TaskGraph rootGraph;
 
-    PrebuiltTaskGraph prebuild;
     CompiledTaskGraph compiled;
 
     int rnd() { return rand(); }
@@ -93,10 +92,8 @@ struct TestTaskGraph
 
     void compile()
     {
-        const bool result = prebuild_task_graph(prebuild, rootGraph);
+        const bool result = build_and_compile_graph<strategy::MergeSubgroups>(rootGraph, &compiled);
         SI_TG_ASSERT(result);
-        strategy::MergeSubgroupsState state;
-        compile_task_graph(compiled, prebuild, state);
     }
 
     void print() { print_compiled_graph(compiled); }
@@ -105,7 +102,7 @@ struct TestTaskGraph
     {
         for (TestTask &task : tasks)
             task.reset();
-        pool.execute(&compiled, use_wait);
+        pool.executeAndWait(&compiled, use_wait);
         for (TestTask &task : tasks)
             task.validate();
     }

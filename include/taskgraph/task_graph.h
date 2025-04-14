@@ -148,14 +148,14 @@ enum class ResourceUsage : uint8_t
 
 struct TaskData
 {
-    using VarTaskFnPtr = int (*)(void*);
+    using TaskNumFnPtr = int (*)(void*);
     using TaskFnPtr = void (*)(void*, int);
 
     TaskFnPtr taskFn = nullptr;
-    VarTaskFnPtr taskVarFn = nullptr;
+    TaskNumFnPtr taskNumFn = nullptr;
     void* userData = nullptr;
 
-    bool valid() const { return taskFn != nullptr || taskVarFn != nullptr; }
+    bool valid() const { return taskFn != nullptr || taskNumFn != nullptr; }
 };
 
 struct TaskGraph

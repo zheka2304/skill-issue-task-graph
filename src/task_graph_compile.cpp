@@ -373,8 +373,10 @@ static void resolve_resources_and_dependencies(PrebuiltTaskGraph &prebuilt, cons
     }
 }
 
-bool prebuild_task_graph(PrebuiltTaskGraph &prebuilt, const TaskGraph &graph)
+bool prebuild_task_graph(const TaskGraph &graph, PrebuiltTaskGraph *prebuilt_ptr)
 {
+    PrebuiltTaskGraph &prebuilt = *prebuilt_ptr;
+
     SI_TG_VERBOSE(0, "building graph\n");
     const uint32_t totalTaskCount = task_graph_resolve_size(graph);
     prebuilt.taskGraph.resize(totalTaskCount);
@@ -507,14 +509,18 @@ void print_compiled_graph(const CompiledTaskGraph &compiled)
     }
 }
 
-
-bool compile_task_graph(CompiledTaskGraph &compiled, PrebuiltTaskGraph &prebuilt, strategy::MergeSubgroupsState &c_state)
+template<>
+bool compile_task_graph(PrebuiltTaskGraph &prebuilt, CompiledTaskGraph *compiled_ptr, strategy::MergeSubgroups *c_state_ptr)
 {
+    CompiledTaskGraph &compiled = *compiled_ptr;
+    strategy::MergeSubgroups &c_state = *c_state_ptr;
+    compiled.isValid = false;
+
     SI_TG_VERBOSE(0, "compiling graph - merge subgroups strategy\n");
-    using GroupData = strategy::MergeSubgroupsState::GroupData;
-    using SubgroupData = strategy::MergeSubgroupsState::SubgroupData;
-    using TaskData = strategy::MergeSubgroupsState::TaskData;
-    using MergeState = strategy::MergeSubgroupsState::MergeState;
+    using GroupData = strategy::MergeSubgroups::GroupData;
+    using SubgroupData = strategy::MergeSubgroups::SubgroupData;
+    using TaskData = strategy::MergeSubgroups::TaskData;
+    using MergeState = strategy::MergeSubgroups::MergeState;
 
     // build groups
     SI_TG_VERBOSE(1, "  building groups\n");
@@ -884,6 +890,7 @@ bool compile_task_graph(CompiledTaskGraph &compiled, PrebuiltTaskGraph &prebuilt
     }
 
     SI_TG_VERBOSE(1, "  done\n");
+    compiled.isValid = true;
     return true;
 }
 

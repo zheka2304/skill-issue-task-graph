@@ -29,7 +29,7 @@ struct PrebuiltTaskGraph
             taskData(allocator), taskGraph(allocator), exclusionGraph(allocator), subGraphData(allocator), subGraphTasks(allocator), traversalData(allocator) {}
 };
 
-bool prebuild_task_graph(PrebuiltTaskGraph &prebuilt_graph, const TaskGraph &graph);
+bool prebuild_task_graph(const TaskGraph &graph, PrebuiltTaskGraph *prebuilt_graph);
 
 
 struct CompiledTaskGraph;
@@ -37,7 +37,7 @@ struct CompiledTaskGraph;
 namespace strategy
 {
 
-struct MergeSubgroupsState
+struct MergeSubgroups
 {
     struct MergeState
     {
@@ -76,9 +76,9 @@ struct MergeSubgroupsState
     Vector<uint32_t> subgroupsToMerge;
     MergeState mergeState;
 
-    MergeSubgroupsState() = default;
+    MergeSubgroups() = default;
     template<typename Allocator>
-    explicit MergeSubgroupsState(const Allocator &allocator) :
+    explicit MergeSubgroups(const Allocator &allocator) :
             groups(allocator), allTasks(allocator), subgroupExclusionGraph(allocator),
             subgroups(allocator), tasks(allocator), nextTasks(allocator),
             subgroupsToMerge(allocator), mergeState(allocator)
@@ -89,7 +89,22 @@ struct MergeSubgroupsState
 
 }
 
-bool compile_task_graph(CompiledTaskGraph &compiled_graph, PrebuiltTaskGraph &prebuilt_graph, strategy::MergeSubgroupsState &state);
+template<typename StrategyT>
+bool compile_task_graph(PrebuiltTaskGraph &prebuilt_graph, CompiledTaskGraph *compiled_graph, StrategyT *strategy_state_ptr);
+
+template<typename StrategyT>
+bool build_and_compile_graph(const TaskGraph &graph, CompiledTaskGraph *compiled_graph, PrebuiltTaskGraph *prebuilt_graph = nullptr, StrategyT *c_state = nullptr)
+{
+    PrebuiltTaskGraph prebuilt;
+    if (prebuilt_graph == nullptr)
+        prebuilt_graph = &prebuilt;
+    if (!prebuild_task_graph(graph, prebuilt_graph))
+        return false;
+    StrategyT strategyState;
+    if (c_state == nullptr)
+        c_state = &strategyState;
+    return compile_task_graph(*prebuilt_graph, compiled_graph, c_state);
+}
 
 void print_compiled_graph(const CompiledTaskGraph &compiled_graph);
 

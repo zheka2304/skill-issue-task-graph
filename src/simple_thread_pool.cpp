@@ -30,7 +30,7 @@ void SimpleThreadPool::shutdownThreads()
     threads.clear();
 }
 
-void SimpleThreadPool::execute(si::tg::CompiledTaskGraph* graph, bool use_wait)
+void SimpleThreadPool::executeAndWait(si::tg::CompiledTaskGraph* graph, bool use_wait)
 {
     doneEvent.word.store(0, std::memory_order_relaxed);
     executor.graphPtr = graph;
