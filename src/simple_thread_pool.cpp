@@ -85,7 +85,7 @@ void SimpleThreadPool::doThread(int thread_id)
         {
 #if !TP_SKIP_EXECUTION
             bool end = false;
-            constexpr int MAX_ATTEMPTS = 4;
+            constexpr int MAX_ATTEMPTS = 32;
             for (int i = 0; i < MAX_ATTEMPTS; i++)
             {
                 const ThreadedTaskGraphExecutor::ThreadResult result = executor.doThread(thread_id);

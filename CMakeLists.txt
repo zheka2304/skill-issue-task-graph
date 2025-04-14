@@ -20,23 +20,27 @@ set(SRC_OPTICK
         optick/optick_serialization.cpp
         optick/optick_server.cpp)
 
+set(SRC_TEST
+        test/main.cpp)
+
 
 set(CMAKE_CXX_STANDARD 20)
 
 add_compile_options(
         -O3
+        -fno-exceptions
         -DSI_TG_USE_OPTICK
         -Wall -Wextra -Wpedantic -Werror
         -Wno-gnu-zero-variadic-macro-arguments
 )
 
-set_source_files_properties(${SRC_OPTICK} PROPERTIES COMPILE_FLAGS -Wno-error)
+set_source_files_properties(${SRC_OPTICK} ${SRC_TEST} PROPERTIES COMPILE_FLAGS -Wno-error)
 
 
 add_executable(skill_issue_task_graph
         ${SRC_OPTICK}
         ${SRC_TASK_GRAPH}
-        main.cpp)
+        ${SRC_TEST})
 
 target_include_directories(skill_issue_task_graph PUBLIC optick include)
 

@@ -4,6 +4,10 @@
 #include <cstdarg>
 #include <cstdio>
 
+namespace si::tg
+{
+int TASK_GRAPH_VERBOSE_LEVEL = 3;
+}
 
 namespace si::tg::internal
 {

@@ -14,12 +14,19 @@ void log_error(const char *str, ...);
 void assert_handler(const char* fmt, ...);
 }
 
+namespace si::tg
+{
+extern int TASK_GRAPH_VERBOSE_LEVEL;
+}
+
 #define SI_TG_ASSERT_MESSAGE_BUILD0(FILE, LINE) "ASSERT FAILED " #FILE ":" #LINE ": "
 #define SI_TG_ASSERT_MESSAGE_BUILD(FILE, LINE) SI_TG_ASSERT_MESSAGE_BUILD0(FILE, LINE)
-#define SI_TG_ASSERT_FMT(E, FMT, ...) do { if (!(E)) { ::si::tg::internal::assert_handler(SI_TG_ASSERT_MESSAGE_BUILD(__FILE__, __LINE__) #E FMT, ##__VA_ARGS__); } } while (0)
+#define SI_TG_ASSERT_FMT(E, FMT, ...) do { if (!(E)) { ::si::tg::internal::assert_handler(SI_TG_ASSERT_MESSAGE_BUILD(__FILE__, __LINE__) #E " " FMT, ##__VA_ARGS__); } } while (0)
 #define SI_TG_ASSERT(E) SI_TG_ASSERT_FMT(E, "")
 
-#define SI_TG_VERBOSE_LEVEL 0
+#ifndef SI_TG_VERBOSE_LEVEL
+#define SI_TG_VERBOSE_LEVEL ::si::tg::TASK_GRAPH_VERBOSE_LEVEL
+#endif
 #define SI_TG_VERBOSE(LEVEL, ...) do { if (LEVEL < (SI_TG_VERBOSE_LEVEL)) ::si::tg::internal::log_debug(__VA_ARGS__); } while (0)
 
 #define SI_TG_ENABLE_DEBUG_STAT_EVENTS 0

@@ -25,7 +25,7 @@ struct CompiledTaskGraph
         [[maybe_unused]] char _falseSharingPad[128 - 16];
 
         TaskGroupState() = default;
-        TaskGroupState(const TaskGroupState &rhs) { memcpy(this, &rhs, offsetof(TaskGroupState, _falseSharingPad)); }
+        TaskGroupState(const TaskGroupState &) {}
     };
 
     struct TaskSubGroup
