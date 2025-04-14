@@ -27,12 +27,15 @@ set(SRC_TEST
 set(CMAKE_CXX_STANDARD 20)
 
 add_compile_options(
-        -O3
         -fno-exceptions
         -DSI_TG_USE_OPTICK
         -Wall -Wextra -Wpedantic -Werror
         -Wno-gnu-zero-variadic-macro-arguments
 )
+
+if(${CMAKE_BUILD_TYPE} STREQUAL "Release")
+    add_compile_options(-O3)
+endif()
 
 set_source_files_properties(${SRC_OPTICK} ${SRC_TEST} PROPERTIES COMPILE_FLAGS -Wno-error)
 
