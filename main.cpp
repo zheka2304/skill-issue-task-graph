@@ -4,23 +4,14 @@
 #include <cassert>
 
 #include "optick.h"
-#include "logger/logger.h"
 #include "taskgraph/task_graph_compile.h"
 #include "taskgraph/task_graph_execute.h"
 #include "taskgraph/simple_thread_pool.h"
 
 
-using sie::logger::debug;
 using namespace si::tg;
 
 std::atomic<int64_t> dbgTasksDone = 0;
-
-void assert_handler(const char *str)
-{
-    sie::logger::error("ASSERT", "[%i] %s", SimpleThreadPool::thisThreadId, str);
-    sie::logger::flush_default_log();
-    __debugbreak();
-}
 
 void some_work()
 {
@@ -77,8 +68,7 @@ void init_random_task_graph(TaskGraph &graph)
 
 void execute_task_graph(CompiledTaskGraph &graph, int thread_num = 4)
 {
-    sie::logger::debug("exec", "start");
-    sie::logger::flush_default_log();
+    printf("[exec] start\n");
     SimpleThreadPool pool;
     pool.windUpThreads(thread_num);
 
@@ -109,18 +99,17 @@ void execute_task_graph(CompiledTaskGraph &graph, int thread_num = 4)
             minNS = std::min(minNS, t);
             totalNS += t;
         }
-        sie::logger::debug("exec", "time: max=%.3lfms min=%.3lfms avg=%.3lfms", double(maxNS) * 1e-6, double(minNS) * 1e-6, double(totalNS) / double(times.size()) * 1e-6);
+        printf("[exec] time: max=%.3lfms min=%.3lfms avg=%.3lfms", double(maxNS) * 1e-6, double(minNS) * 1e-6, double(totalNS) / double(times.size()) * 1e-6);
     }
 #if SI_TG_ENABLE_DEBUG_STAT_EVENTS
-    debug("validate", "stats:");
+    printf("[validate] stats:");
     for (int i = 0; i < int(ThreadedTaskGraphExecutor::Event::NUM); i++)
-        debug("validate", "  %s %lli", ThreadedTaskGraphExecutor::EVENT_NAMES[i], stats[i]);
+        printf("[validate]   %s %lli", ThreadedTaskGraphExecutor::EVENT_NAMES[i], stats[i]);
 #endif
 }
 
 int main()
 {
-    sie::logger::init_default_log_handler("log.txt");
     OPTICK_START_CAPTURE();
 
     TaskGraph graph1;
@@ -142,11 +131,9 @@ int main()
     CompiledTaskGraph compiledGraph;
     assert(si::tg::compile_task_graph(compiledGraph, prebuiltGraph, state));
 
-    sie::logger::flush_default_log();
     execute_task_graph(compiledGraph);
 
     OPTICK_STOP_CAPTURE();
     OPTICK_SAVE_CAPTURE("../test-capture.opt");
-    sie::logger::shutdown_default_log_handler();
     return 0;
 }

@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
-project(ecs_scheduler)
+
+project(skill_issue_task_graph)
 
 
 set(SRC_TASK_GRAPH
@@ -7,9 +8,6 @@ set(SRC_TASK_GRAPH
         src/task_graph_execute.cpp
         src/task_graph_config.cpp
         src/simple_thread_pool.cpp)
-
-set(SRC_LOGGER
-        logger/logger.cpp)
 
 set(SRC_OPTICK
         optick/optick_capi.cpp
@@ -34,12 +32,12 @@ add_compile_options(
 
 set_source_files_properties(${SRC_OPTICK} PROPERTIES COMPILE_FLAGS -Wno-error)
 
-add_executable(ecs_scheduler
+
+add_executable(skill_issue_task_graph
         ${SRC_OPTICK}
-        ${SRC_LOGGER}
         ${SRC_TASK_GRAPH}
         main.cpp)
 
-target_include_directories(ecs_scheduler PUBLIC optick include)
+target_include_directories(skill_issue_task_graph PUBLIC optick include)
 
-target_link_libraries(ecs_scheduler PUBLIC ws2_32 DbgHelp)
+target_link_libraries(skill_issue_task_graph PUBLIC ws2_32 DbgHelp)
