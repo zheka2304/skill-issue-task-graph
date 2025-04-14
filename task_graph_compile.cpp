@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <sstream>
+#include <unordered_map>
 #include "logger.h"
 #include "task_graph_execute.h"
 
@@ -79,7 +80,7 @@ bool TaskGraph::validateAndNormalize(CompiledTaskGraph &compiled)
                 for (uint32_t r2 = r1 + 1; r2 < n2.resources.size(); r2++)
                 {
                     const auto rr1 = n1.resources[r1];
-                    const auto rr2 = n1.resources[r2];
+                    const auto rr2 = n2.resources[r2];
                     excluded |= (rr1.id == rr2.id && (rr1.write || rr2.write));
                 }
             exclusionGraph.setConnectedBoth(i1, i2, excluded);
@@ -132,6 +133,7 @@ bool TaskGraph::validateAndNormalize(CompiledTaskGraph &compiled)
         uint64_t mask;
         int subgroupIdx;
         std::vector<uint32_t> tasks;
+        bool isFake = false;
     };
     struct GroupData
     {
@@ -162,15 +164,38 @@ bool TaskGraph::validateAndNormalize(CompiledTaskGraph &compiled)
             });
             if (!group.subgroups.empty())
             {
+                /*
+                if (group.subgroups.size() > 64)
+                {
+                    uint32_t desiredCnt = group.subgroups.size();
+                    desiredCnt--;
+                    desiredCnt |= desiredCnt >> 1;
+                    desiredCnt |= desiredCnt >> 2;
+                    desiredCnt |= desiredCnt >> 4;
+                    desiredCnt |= desiredCnt >> 8;
+                    desiredCnt |= desiredCnt >> 16;
+                    desiredCnt++;
+                    int i = 0;
+                    while (group.subgroups.size() < desiredCnt)
+                    {
+                        SubgroupData sg = group.subgroups[i++];
+                        sg.isFake = true;
+                        group.subgroups.push_back(std::move(sg));
+                    }
+                }
+                */
                 group.subgroupExclusionGraph.resize(group.subgroups.size());
                 group.subgroupExclusionGraph.setFlagCount(8);
                 for (uint32_t i1 = 0; i1 < group.subgroups.size(); i1++)
+                {
+                    group.subgroupExclusionGraph.setConnectedBoth(i1, i1, true);
                     for (uint32_t i2 = i1 + 1; i2 < group.subgroups.size(); i2++)
                     {
                         uint32_t t1 = group.subgroups[i1].tasks.back();
                         uint32_t t2 = group.subgroups[i2].tasks.back();
                         group.subgroupExclusionGraph.setConnectedBoth(i1, i2, exclusionGraph.isConnected(t1, t2));
                     }
+                }
                 groups.push_back(std::move(group));
             }
         }
@@ -179,49 +204,17 @@ bool TaskGraph::validateAndNormalize(CompiledTaskGraph &compiled)
     // merge subgroups
     for (GroupData &group : groups)
     {
-        logger::debug("compile", "merging subgroups");
         group.subgroupCnt = group.subgroups.size();
-
-        auto calcLockingConst = [&] (uint32_t sg1, uint32_t sg2) -> std::pair<int, int>
+        struct MergeState
         {
-            std::span<uint64_t> edges1 = group.subgroupExclusionGraph.getEdges(sg1);
-            std::span<uint64_t> edges2 = group.subgroupExclusionGraph.getEdges(sg2);
-            assert(edges1.size() == edges2.size());
-            int lockedTaskCnt1 = 0;
-            int lockedTaskCnt2 = 0;
-            int lockedTaskCntU = 0;
-            if constexpr (false)
-            {
-                iter_set_bits_span_var([&] (uint32_t v, bool e1, bool e2){
-                    if (e1)
-                        lockedTaskCnt1 += group.subgroups[v].tasks.size();
-                    if (e2)
-                        lockedTaskCnt2 += group.subgroups[v].tasks.size();
-                    lockedTaskCntU += group.subgroups[v].tasks.size();
-                }, edges1, edges2);
-            }
-            else
-            {
-                for (int i = 0; i < edges1.size(); i++)
-                {
-                    lockedTaskCnt1 += count_set_bits(edges1[i]);
-                    lockedTaskCnt2 += count_set_bits(edges2[i]);
-                    lockedTaskCntU += count_set_bits(edges1[i] | edges2[i]);
-                }
-            }
-            int lockingCost1 = lockedTaskCnt1 * group.subgroups[sg1].tasks.size();
-            int lockingCost2 = lockedTaskCnt2 * group.subgroups[sg2].tasks.size();
-            int lockingCostU = lockedTaskCntU * (group.subgroups[sg1].tasks.size() + group.subgroups[sg2].tasks.size());
-            return {lockingCost1 + lockingCost2, lockingCostU};
+            std::vector<int> sgPair;
+            int totalValue;
+            int pairCnt;
         };
 
-        logger::debug("compile", "  initial cost calc");
-        group.subgroupsLockingCost.resize(group.subgroups.size() * group.subgroups.size());
-        for (uint32_t i1 = 0; i1 < group.subgroups.size(); i1++)
-            for (uint32_t i2 = i1 + 1; i2 < group.subgroups.size(); i2++)
-                group.lockingCost(i1, i2) = calcLockingConst(i1, i2);
         auto mergeSubgroups = [&] (uint64_t dst, uint64_t src)
         {
+            // logger::debug("compile", "  merge %i <- %i", dst, src);
             assert(src != dst);
             assert(!group.subgroups[src].tasks.empty());
             assert(!group.subgroups[dst].tasks.empty());
@@ -232,92 +225,166 @@ bool TaskGraph::validateAndNormalize(CompiledTaskGraph &compiled)
             group.subgroups[src].tasks.clear();
             group.subgroupExclusionGraph.setConnectedBoth(src, dst, false);
             group.subgroupExclusionGraph.iterEdges(src, [&] (uint32_t v) {
+                if (v == src)
+                    return;
                 // int cnt = group.subgroupExclusionGraph.countEdges(v);
                 group.subgroupExclusionGraph.setConnectedBoth(src, v, false);
                 group.subgroupExclusionGraph.setConnectedBoth(dst, v, true);
             });
-            group.subgroupExclusionGraph.iterEdges(dst, [&] (uint32_t v) {
-                // logger::debug("", "  updated cost %i", v);
-                group.lockingCost(dst, v) = calcLockingConst(dst, v);
-                group.subgroupExclusionGraph.iterEdges(v, [&] (uint32_t vv) {
-                    group.lockingCost(v, vv) = calcLockingConst(v, vv);
-                });
-            });
         };
 
-        bool force = false;
-        int32_t mergeThreshold = 0;
-        while (true)
+        const auto calcPairMergeValue = [&] (uint32_t sg1, uint32_t sg2)
         {
-            if (false)
-            {
-                logger::debug("", "iteration");
-                for (uint32_t i1 = 0; i1 < group.subgroups.size(); i1++)
-                    for (uint32_t i2 = i1 + 1; i2 < group.subgroups.size(); i2++)
-                        if (group.subgroupExclusionGraph.isConnected(i1, i2) && !group.subgroups[i1].tasks.empty() && !group.subgroups[i2].tasks.empty())
-                            if (group.lockingCost(i1, i2) != calcLockingConst(i1, i2))
-                            {
-                                auto c1 = group.lockingCost(i1, i2);
-                                auto c2 = calcLockingConst(i1, i2);
-                                logger::debug("", "assert failed %i-%i (%i,%i/%i,%i)", i1, i2, c1.first, c1.second, c2.first, c2.second);
-                                logger::flush_default_log();
-                                assert(0);
-                            }
-            }
+            assert(sg1 != sg2);
+            const std::span<uint64_t> edges1 = group.subgroupExclusionGraph.getEdges(sg1).getSpan();
+            const std::span<uint64_t> edges2 = group.subgroupExclusionGraph.getEdges(sg2).getSpan();
+            const bool isConnected = group.subgroupExclusionGraph.isConnected(sg1, sg2);
+            int value = isConnected ? 1 : 0; // +1 edge eliminated
+            group.subgroupExclusionGraph.setConnectedBoth(sg1, sg2, false);
+            for (int i = 0; i < edges1.size(); i++)
+                value += count_set_bits(edges1[i] & edges2[i]); // unified edges will be eliminated
+            group.subgroupExclusionGraph.setConnectedBoth(sg1, sg2, isConnected);
+            return value;
+        };
 
-            bool anyMergedTrivially = false;
-            int32_t minMergeCost = INT_MAX;
-            std::pair<int32_t, int32_t> minMergePair = {-1, -1};
-            for (uint32_t i1 = 0; i1 < group.subgroups.size(); i1++)
+        const auto calcPairSetValue = [&] (MergeState &state, uint32_t sg1, uint32_t sg2)
+        {
+            if (state.sgPair[sg1] == sg2)
             {
-                if (group.subgroups[i1].tasks.empty())
-                {
-                    group.subgroupExclusionGraph.iterEdges(i1, [&] (uint32_t) { assert(0); });
+                assert(state.sgPair[sg2] == sg1);
+                return 0;
+            }
+            int value = calcPairMergeValue(sg1, sg2);
+            if (state.sgPair[sg1] >= 0)
+                value -= calcPairMergeValue(sg1, state.sgPair[sg1]);
+            if (state.sgPair[sg2] >= 0)
+                value -= calcPairMergeValue(sg2, state.sgPair[sg2]);
+            return value;
+        };
+
+        const auto makePair = [&] (MergeState &state, uint32_t sg1, uint32_t sg2)
+        {
+            int valueChange = calcPairSetValue(state, sg1, sg2);
+            state.totalValue += valueChange;
+            if (state.sgPair[sg1] >= 0)
+            {
+                //logger::debug("compile", "    unpair %i %i", sg1, sgPair[sg1]);
+                state.sgPair[state.sgPair[sg1]] = -1;
+                state.pairCnt--;
+            }
+            if (state.sgPair[sg2] >= 0)
+            {
+                //logger::debug("compile", "    unpair %i %i", bestIdx, sgPair[bestIdx]);
+                state.sgPair[state.sgPair[sg2]] = -1;
+                state.pairCnt--;
+            }
+            //logger::debug("compile", "    pair %i %i", sg1, bestIdx);
+            state.sgPair[sg2] = sg1;
+            state.sgPair[sg1] = sg2;
+            state.pairCnt++;
+            return valueChange;
+        };
+
+        const auto resetMergeState = [&] (MergeState &state)
+        {
+            state.sgPair.clear();
+            state.sgPair.resize(group.subgroups.size(), -1);
+            state.totalValue = 0;
+            state.pairCnt = 0;
+        };
+
+        std::vector<uint32_t> subgroupsToMerge;
+        subgroupsToMerge.reserve(group.subgroups.size());
+
+        while (group.subgroupCnt > 64)
+        {
+            subgroupsToMerge.clear();
+            for (uint32_t sg = 0; sg < group.subgroups.size(); sg++)
+            {
+                if (group.subgroups[sg].tasks.empty())
                     continue;
-                }
-                for (uint32_t i2 = i1 + 1; i2 < group.subgroups.size(); i2++)
-                {
-                    if (group.subgroupCnt <= 64 && !anyMergedTrivially)
-                        break;
-                    if (group.subgroups[i2].tasks.empty())
-                        continue;
-                    if (!group.subgroupExclusionGraph.isConnected(i1,i2)) // skip not connected
-                        continue;
-                    auto [lockingCostSum, lockingCostUni] = group.lockingCost(i1, i2);
-                    int lockingCostChange = lockingCostUni - lockingCostSum;
-                    assert(lockingCostChange >= 0);
-                    if (lockingCostChange < minMergeCost)
-                    {
-                        if (lockingCostChange > mergeThreshold)
-                            minMergePair = {i1, i2};
-                        minMergeCost = lockingCostChange;
-                    }
-                    if (lockingCostChange <= mergeThreshold)
-                    {
-                        mergeSubgroups(i1, i2);
-                        if (i1 == minMergePair.first || i1 == minMergePair.second || i2 == minMergePair.first || i2 == minMergePair.second)
-                            minMergePair = {-1, -1};
-                        if (lockingCostChange == 0)
-                        {
-                            anyMergedTrivially = true;
-                            mergeThreshold = 0;
-                        }
-                        continue;
-                    }
-                }
+                subgroupsToMerge.push_back(sg);
             }
+            std::sort(subgroupsToMerge.begin(), subgroupsToMerge.end(), [&] (uint32_t a, uint32_t b) {
+                return group.subgroupExclusionGraph.getEdges(a).count() > group.subgroupExclusionGraph.getEdges(b).count();
+            });
+            while (int(group.subgroupCnt) - int(subgroupsToMerge.size()) / 2 < 64)
+                subgroupsToMerge.pop_back();
 
-            logger::debug("compile", "  remaining %i", group.subgroupCnt);
-            if (anyMergedTrivially)
-                continue;
-            if (group.subgroupCnt <= 64)
-                break;
-            if (minMergePair.first >= 0)
+            const auto runSinglePass = [&] (MergeState &state)
             {
-                mergeThreshold = minMergeCost;
-                // logger::debug("compile", "merged by min cost %i <- %i cost=%i", maxPair.first, maxPair.second, int(minParallelCost));
-                mergeSubgroups(minMergePair.first, minMergePair.second);
+                while (true)
+                {
+                    int valueChange = 0;
+                    for (uint32_t sg1: subgroupsToMerge)
+                    {
+                        int bestVal = -1;
+                        int bestIdx = -1;
+                        for (uint32_t sg2: subgroupsToMerge)
+                        {
+                            if (sg1 == sg2)
+                                continue;
+                            int val = calcPairSetValue(state, sg1, sg2);
+                            if (bestVal < val)
+                            {
+                                bestIdx = sg2;
+                                bestVal = val;
+                            }
+                        }
+                        if (bestIdx >= 0)
+                        {
+                            assert(makePair(state, sg1, bestIdx) == bestVal);
+                            valueChange += bestVal;
+                        }
+                    }
+                    if (valueChange == 0)
+                        break;
+                }
+            };
+
+            MergeState baseState;
+            resetMergeState(baseState);
+            runSinglePass(baseState);
+
+            /*
+            srand(6000);
+            for (int n = 0; n < 5; n++)
+            {
+                logger::debug("compile", "  epoch %i: value %i", n, baseState.totalValue);
+                MergeState bestState;
+                resetMergeState(bestState);
+                for (int k = 0; k < 5; k++)
+                {
+                    MergeState state = baseState;
+                    // make random change
+                    for (int i = 0; i < 100; i++)
+                    {
+                        int sg1 = subgroupsToMerge[rand() % subgroupsToMerge.size()];
+                        int sg2 = subgroupsToMerge[rand() % subgroupsToMerge.size()];
+                        if (sg1 == sg2)
+                            continue;
+                        makePair(state, sg1, sg2);
+                    }
+                    runSinglePass(state);
+                    logger::debug("compile", "    attempt %i: value %i", k, state.totalValue);
+                    if (state.totalValue > bestState.totalValue && state.totalValue > baseState.totalValue)
+                        bestState = std::move(state);
+                }
+                if (bestState.totalValue > baseState.totalValue)
+                    baseState = std::move(bestState);
+            }*/
+
+            // merge pairs
+            int cntBeforeMerge = group.subgroupCnt;
+            for (uint32_t sg1 = 0; sg1 < group.subgroups.size(); sg1++)
+            {
+                if (group.subgroups[sg1].tasks.empty())
+                    continue;
+                if (baseState.sgPair[sg1] >= 0)
+                    mergeSubgroups(sg1, baseState.sgPair[sg1]);
+                group.subgroupExclusionGraph.iterEdges(sg1, [&] (uint32_t sg2) { assert(!group.subgroups[sg2].tasks.empty()); });
             }
+            logger::debug("compile", "  merged %i/%i subgroups, value: %i, remaining %i", baseState.pairCnt * 2, cntBeforeMerge, baseState.totalValue, group.subgroupCnt);
         }
     }
 
@@ -327,13 +394,13 @@ bool TaskGraph::validateAndNormalize(CompiledTaskGraph &compiled)
         // init actual index
         int nextSubgroupIdx = 0;
         for (SubgroupData &subgroup : group.subgroups)
-            if (!subgroup.tasks.empty())
+            if (!subgroup.tasks.empty() && !subgroup.isFake)
                 subgroup.subgroupIdx = nextSubgroupIdx++;
         // init mask
         for (uint32_t i = 0; i < group.subgroups.size(); i++)
         {
             SubgroupData &subgroup = group.subgroups[i];
-            if (subgroup.tasks.empty())
+            if (subgroup.tasks.empty() || subgroup.isFake)
                 continue;
             subgroup.mask = uint64_t(1) << uint64_t(subgroup.subgroupIdx);
             group.subgroupExclusionGraph.iterEdges(i, [&] (uint32_t v) {
@@ -343,7 +410,7 @@ bool TaskGraph::validateAndNormalize(CompiledTaskGraph &compiled)
             });
         }
         // cleanup
-        group.subgroups.erase(std::remove_if(group.subgroups.begin(), group.subgroups.end(), [&] (auto &sg) { return sg.tasks.empty(); }), group.subgroups.end());
+        group.subgroups.erase(std::remove_if(group.subgroups.begin(), group.subgroups.end(), [&] (auto &sg) { return sg.tasks.empty() || sg.isFake; }), group.subgroups.end());
         for (uint32_t i = 0; i < group.subgroups.size(); i++)
             assert(i == group.subgroups[i].subgroupIdx);
     }
@@ -429,7 +496,7 @@ bool TaskGraph::validateAndNormalize(CompiledTaskGraph &compiled)
         for (int subgroupId = group.subGroupsStart; subgroupId < group.subGroupsEnd; subgroupId++)
         {
             CompiledTaskGraph::TaskSubGroup &subgroup = compiled.allSubGroups[subgroupId];
-            logger::debug_inline("graph", "  subgroup %02i [", subgroupId);
+            logger::debug_inline("graph", "  subgroup %02i (%3i) [", subgroupId, subgroup.tasksEnd - subgroup.tasksStart);
             for (int i = 0; i < 64; i++)
                 logger::debug_inline("graph", "%i", (subgroup.excludedMask >> uint64_t(i)) & uint64_t(1));
             logger::debug_inline("graph", "]");

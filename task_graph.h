@@ -88,6 +88,44 @@ struct BaseGraph
 
     int getVertexCount() const { return vertexCnt; }
 
+    struct EdgesRef
+    {
+        EdgesRef() = default;
+        explicit EdgesRef(uint64_t *data, int cnt) : data(data, cnt) {}
+        template<typename F>
+        void iter(F &&f) { iter_set_bits_span(data, std::forward<F>(f)); }
+        std::span<uint64_t> getSpan() const { return data; }
+        int count() const
+        {
+            int cnt = 0;
+            for (uint64_t w : data)
+                cnt += count_set_bits(w);
+            return cnt;
+        }
+
+        bool operator==(const EdgesRef &rhs) const
+        {
+            if (data.size() != rhs.data.size())
+                return false;
+            bool r = true;
+            for (int i = 0; i < data.size(); i++)
+                r &= data[i] == rhs.data[i];
+            return r;
+        }
+
+        bool operator<(const EdgesRef &rhs) const
+        {
+            if (data.size() != rhs.data.size())
+                return data.size() < rhs.data.size();
+            for (int i = 0; i < data.size(); i++)
+                if (data[i] != rhs.data[i])
+                    return data[i]<= rhs.data[i];
+            return false;
+        }
+    private:
+        std::span<uint64_t> data;
+    };
+
     void resize(uint32_t newSize)
     {
         if (vertexCnt == newSize)
@@ -147,29 +185,9 @@ struct BaseGraph
         return (word & bit) != 0;
     }
 
-    std::span<uint64_t> getEdges(uint32_t v1)
-    {
-        return std::span(connections.data() + v1 * wordCnt, wordCnt);
-    }
-
-    std::span<const uint64_t> getEdges(uint32_t v1) const
-    {
-        return std::span(connections.data() + v1 * wordCnt, wordCnt);
-    }
-
+    EdgesRef getEdges(uint32_t v1) { return EdgesRef(connections.data() + v1 * wordCnt, wordCnt); }
     template<typename F>
-    void iterEdges(uint32_t v1, F &&f)
-    {
-        iter_set_bits_span(getEdges(v1), f);
-    }
-
-    int countEdges(uint32_t v1) const
-    {
-        int cnt = 0;
-        for (uint64_t word : getEdges(v1))
-            cnt += count_set_bits(word);
-        return cnt;
-    }
+    void iterEdges(uint32_t v1, F &&f) { getEdges(v1).iter(std::forward<F>(f)); }
 
     void setFlagCount(uint32_t cnt)
     {
@@ -205,9 +223,17 @@ struct BaseGraph
     }
 
     BaseGraph() = default;
-    BaseGraph(const BaseGraph &) = delete;
+    BaseGraph(const BaseGraph &rhs) = delete;
+    void operator=(const BaseGraph &rhs) = delete;
     BaseGraph(BaseGraph &&rhs) { *this = std::move(rhs); }
-    void operator=(const BaseGraph &) = delete;
+    void copyFrom(const BaseGraph &rhs)
+    {
+        connections = rhs.connections;
+        vertexCnt = rhs.vertexCnt;
+        wordCnt = rhs.wordCnt;
+        vertexFlags = rhs.vertexFlags;
+        vertexFlagCount = rhs.vertexFlagCount;
+    }
     BaseGraph &operator=(BaseGraph &&rhs)
     {
         connections = std::move(rhs.connections);
@@ -238,46 +264,6 @@ void base_graph_dfs(BaseGraph &graph, uint32_t v, uint32_t visited_flag, F &&f)
         });
     });
 }
-
-struct GraphBfsState
-{
-    std::vector<std::pair<uint32_t, int>> nodes;
-    int visitedCnt = 0;
-
-    size_t size() const { return visitedCnt; }
-    auto begin() const { return nodes.begin(); }
-    auto end() const { return nodes.begin() + visitedCnt; }
-    void clear()
-    {
-        nodes.clear();
-        visitedCnt = 0;
-    }
-    void initOne(uint32_t v)
-    {
-        clear();
-        nodes.push_back({v, 0});
-    }
-};
-
-/*
-template<typename F>
-void base_graph_bfs(BaseGraph &graph, GraphBfsState &state, uint32_t visited_flag, F &&f)
-{
-    while (state.visitedCnt < state.nodes.size())
-    {
-        const auto [v, dist] = state.nodes[state.visitedCnt++];
-        if (graph.getFlag(v, visited_flag))
-            return;
-        f(v, dist);
-        graph.iterEdges(v, [&] (uint32_t vv) {
-            if (graph.getFlag(vv, visited_flag))
-                return;
-            graph.setFlag(vv, visited_flag, true);
-            state.nodes.push_back({vv, dist + 1});
-        });
-    }
-}
-*/
 
 namespace sie
 {
@@ -329,3 +315,21 @@ public:
 };
 
 }
+
+template<>
+struct std::hash<BaseGraph::EdgesRef>
+{
+    size_t operator()(const BaseGraph::EdgesRef &val) const
+    {
+        size_t seed = val.getSpan().size();
+        for (uint64_t x : val.getSpan())
+        {
+            x = ((x >> 16) ^ x) * 0x45d9f3b;
+            x = ((x >> 16) ^ x) * 0x45d9f3b;
+            x = (x >> 16) ^ x;
+            seed ^= x + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        }
+        return seed;
+    }
+};
+

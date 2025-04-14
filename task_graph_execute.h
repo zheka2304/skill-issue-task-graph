@@ -3,6 +3,7 @@
 #include <atomic>
 #include <thread>
 #include <condition_variable>
+#include <functional>
 
 #include "task_graph.h"
 
@@ -95,7 +96,7 @@ struct ThreadedTaskGraphExecutor
     };
 
     void prepareForExecution(int thread_num);
-    ThreadResult doThread(int thread_id);
+    ThreadResult doThread(int thread_id, const std::function<void(int)> &wake_threads);
 
     enum class Event : uint8_t
     {
@@ -242,6 +243,7 @@ private:
     std::vector<std::thread> threads;
     std::condition_variable condVar;
     std::mutex condVarMutex;
+    std::atomic<int64_t> wakeThreads = 0;
     bool running = false;
 };
 

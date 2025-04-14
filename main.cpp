@@ -13,27 +13,34 @@
 using sie::logger::debug;
 using namespace sie;
 
-void init_random_task_graph(TaskGraph &graph)
+void append_random_task_graph(TaskGraph &graph, int sz, int res_ofs)
 {
-    srand(1234);
-    graph.allNodes.resize(1000);
-    for (int i = 0; i < graph.allNodes.size(); i++)
+    uint32_t offset = graph.allNodes.size();
+    graph.allNodes.resize(offset + 1000);
+    for (int i = offset; i < offset + sz; i++)
     {
         graph.setTaskData(i, +[] (void* data, int idx)
         {
             OPTICK_EVENT("test_task");
-            debug("exec", "    test task %i (%i)", (int) (intptr_t) data, idx);
+            printf("    test task %i (%i)", (int) (intptr_t) data, idx);
         }, nullptr, (void*) i);
         if (i >= graph.allNodes.size() - 1)
             continue;
-        for (int n = 0; n < 5; n++)
+        for (int n = 0; n < 2; n++)
             graph.setNext(i, i + 1 + rand() % (graph.allNodes.size() - i - 1));
         for (int n = 0; n < 5; n++)
-            graph.addResource(i, rand() % 100, rand() % 10 == 0);
+            graph.addResource(i,  res_ofs+ rand() % 200, rand() % 5 == 0);
     }
 }
 
-void execute_task_graph(CompiledTaskGraph &graph, int thread_num = 2)
+void init_random_task_graph(TaskGraph &graph)
+{
+    srand(1234);
+    append_random_task_graph(graph, 1000, 0);
+    // append_random_task_graph(graph, 1000, 190);
+}
+
+void execute_task_graph(CompiledTaskGraph &graph, int thread_num = 4)
 {
     ThreadedTaskGraphExecutor executor;
     {
@@ -47,6 +54,7 @@ void execute_task_graph(CompiledTaskGraph &graph, int thread_num = 2)
         pool.waitAll();
     }
 
+    /*
     debug("validate", "timed events:");
     for (const auto &evt : executor.getAllTimedEvents())
         debug("validate", "  %s %i", ThreadedTaskGraphExecutor::EVENT_NAMES[int(evt.event)], evt.ids[0]);
@@ -54,6 +62,7 @@ void execute_task_graph(CompiledTaskGraph &graph, int thread_num = 2)
     auto stats = executor.getEventCountStats();
     for (int i = 0; i < int(ThreadedTaskGraphExecutor::Event::NUM); i++)
         debug("validate", "  %s %lli", ThreadedTaskGraphExecutor::EVENT_NAMES[i], stats[i]);
+    */
 }
 
 int main()

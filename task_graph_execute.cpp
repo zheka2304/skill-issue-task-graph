@@ -45,9 +45,9 @@ void ThreadedTaskGraphExecutor::prepareForExecution(int thread_num)
     curTimedEventIdx.store(0, std::memory_order_relaxed);
 }
 
-ThreadedTaskGraphExecutor::ThreadResult ThreadedTaskGraphExecutor::doThread(int thread_id)
+ThreadedTaskGraphExecutor::ThreadResult ThreadedTaskGraphExecutor::doThread(int thread_id, const std::function<void(int)> &wake_threads)
 {
-    OPTICK_EVENT()
+    // OPTICK_EVENT("doThread")
     CompiledTaskGraph & __restrict graph = *graphPtr;
     const uint32_t maxFailedGroups = 8;
     const uint32_t maxFailedSubGroups = 32;
@@ -314,6 +314,7 @@ void SimpleThreadPool::windUp(int count)
 
 void SimpleThreadPool::wakeAll()
 {
+    wakeThreads = threads.size();
     condVar.notify_all();
 }
 
@@ -343,13 +344,24 @@ void SimpleThreadPool::exec(SimpleThreadPool* self, int thread_id)
     std::vector<TaskFnPtr> taskQueue;
     while (self->running)
     {
-        const ThreadedTaskGraphExecutor::ThreadResult result = self->executor->doThread(thread_id);
+        const ThreadedTaskGraphExecutor::ThreadResult result = self->executor->doThread(thread_id, [self] (int cnt) {
+            OPTICK_EVENT("wake_threads");
+            self->wakeThreads.fetch_add(cnt);
+            for (int i = 0; i < cnt; i++)
+                self->condVar.notify_one();
+        });
         if (result != ThreadedTaskGraphExecutor::ThreadResult::WAIT)
             break;
         // todo: yield
 
-        // std::unique_lock lock(self->condVarMutex);
-        // self->condVar.wait(lock, [] { return true; });
+        /*
+        OPTICK_EVENT("thread_wait");
+        std::unique_lock lock(self->condVarMutex);
+        self->condVar.wait(lock, [&] {
+            return self->wakeThreads.load() > 0;
+        });
+        self->wakeThreads.fetch_sub(1);
+        */
     }
     sie::logger::debug("worker", "shutdown %i", thread_id);
 }
