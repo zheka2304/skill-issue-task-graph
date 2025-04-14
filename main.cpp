@@ -81,25 +81,44 @@ void execute_task_graph(CompiledTaskGraph &graph, int thread_num = 4)
     sie::logger::flush_default_log();
     SimpleThreadPool pool;
     pool.windUpThreads(thread_num);
-    for (int i = 0; i < 10; i++)
+
+    std::vector<uint64_t> times;
+    Array<int64_t, uint8_t(si::tg::ThreadedTaskGraphExecutor::Event::NUM)> stats = {0};
+
+    for (int i = 0; i < 1000; i++)
     {
-        if (i % 100 == 0) sie::logger::debug("exec", "iter %i", i);
+        // if (i % 100 == 0) sie::logger::debug("exec", "iter %i", i);
         OPTICK_FRAME("MainThread");
         OPTICK_EVENT()
         dbgTasksDone = 0;
+        const auto beginTime = std::chrono::high_resolution_clock::now();
         pool.execute(&graph, true);
+        const auto endTime = std::chrono::high_resolution_clock::now();
+        times.push_back(std::chrono::duration_cast<std::chrono::nanoseconds>(endTime - beginTime).count());
+        pool.executor.getEventCountStats(stats);
         // SI_TG_ASSERT(dbgTasksDone == 1000);
     }
 
+    {
+        uint64_t maxNS = 0;
+        uint64_t minNS = ~uint64_t(0);
+        uint64_t totalNS = 0;
+        for (uint64_t t : times)
+        {
+            maxNS = std::max(maxNS, t);
+            minNS = std::min(minNS, t);
+            totalNS += t;
+        }
+        sie::logger::debug("exec", "time: max=%.3lfms min=%.3lfms avg=%.3lfms", double(maxNS) * 1e-6, double(minNS) * 1e-6, double(totalNS) / double(times.size()) * 1e-6);
+    }
     /*
     debug("validate", "timed events:");
     for (const auto &evt : executor.getAllTimedEvents())
         debug("validate", "  %s %i", ThreadedTaskGraphExecutor::EVENT_NAMES[int(evt.event)], evt.ids[0]);
+    */
     debug("validate", "stats:");
-    auto stats = executor.getEventCountStats();
     for (int i = 0; i < int(ThreadedTaskGraphExecutor::Event::NUM); i++)
         debug("validate", "  %s %lli", ThreadedTaskGraphExecutor::EVENT_NAMES[i], stats[i]);
-    */
 }
 
 int main()

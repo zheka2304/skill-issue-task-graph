@@ -96,8 +96,7 @@ struct ThreadedTaskGraphExecutor
     enum class ThreadResult : uint8_t
     {
         WAIT = 0,
-        EXIT,
-        ALL_DONE
+        EXIT
     };
 
     void prepareForExecution(int thread_num);
@@ -164,7 +163,7 @@ struct ThreadedTaskGraphExecutor
         bool operator<(const TimedEvent &rhs) const { return timestamp < rhs.timestamp; }
     };
 
-    Array<int64_t, uint8_t(Event::NUM)> getEventCountStats() const;
+    void getEventCountStats(Array<int64_t, uint8_t(Event::NUM)> &stats) const;
     void getAllTimedEvents(Vector<TimedEvent> &events) const;
 
 private:
@@ -203,13 +202,12 @@ private:
     Vector<ThreadCtx> threadCtxArray;
     [[maybe_unused]] char _falseSharingPad[128];
     std::atomic<uint64_t> sleepingThreadsMask = 0;
-    std::atomic<bool> allDoneEventPending = false;
 #if SI_TG_ENABLE_DEBUG_TIMED_EVENTS
     std::atomic<int64_t> curTimedEventIdx;
 #endif
 
     bool doGroupUntilSubgroupEnter(ThreadCtx & SI_TG_RESTRICT ctx, bool allow_var_tasks);
-    uint64_t gatherThreadsToWake();
+    uint64_t gatherAndWakeThreads(ThreadCtx & SI_TG_RESTRICT this_ctx, int need_count);
 
     bool tryEnterSubgroup(ThreadCtx & SI_TG_RESTRICT ctx, uint32_t group_id, uint32_t subgroup_id, uint64_t &executing, bool loop);
     std::pair<uint32_t, uint32_t> tryAcquireVarTask(ThreadCtx & SI_TG_RESTRICT ctx, uint32_t group_id, uint32_t subgroup_id);

@@ -40,9 +40,10 @@ private:
     void doThread(int thread_id);
     static void exec(SimpleThreadPool* self, int thread_id);
 
-private:
+public:
     ThreadedTaskGraphExecutor executor;
 
+private:
     bool running = false;
     bool useWait = false;
     std::vector<std::thread> threads;

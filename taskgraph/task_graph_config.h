@@ -19,7 +19,7 @@ void assert_handler(const char* fmt, ...);
 #define SI_TG_ASSERT_FMT(E, FMT, ...) do { if (!(E)) { ::si::tg::internal::assert_handler(SI_TG_ASSERT_MESSAGE_BUILD(__FILE__, __LINE__) #E FMT, ##__VA_ARGS__); } } while (0)
 #define SI_TG_ASSERT(E) SI_TG_ASSERT_FMT(E, "")
 
-#define SI_TG_ENABLE_DEBUG_STAT_EVENTS 0
+#define SI_TG_ENABLE_DEBUG_STAT_EVENTS 1
 
 #define SI_TG_ENABLE_DEBUG_LOG_EVENTS 0
 #define SI_TG_DEBUG_LOG_SKIP_EVENTS_LIST(X) \

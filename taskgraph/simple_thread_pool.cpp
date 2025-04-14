@@ -1,6 +1,6 @@
 #include "simple_thread_pool.h"
 
-#define TP_VERBOSE(...) // debug("exec", __VA_ARGS__)
+#define TP_VERBOSE(...) // si::tg::internal::log_debug(__VA_ARGS__)
 #define TP_SKIP_EXECUTION 0
 
 
@@ -47,9 +47,9 @@ void SimpleThreadPool::execute(si::tg::CompiledTaskGraph* graph, bool use_wait)
 
 void SimpleThreadPool::waitDone()
 {
-    TP_VERBOSE("all done - wait start");
+    TP_VERBOSE("all done - wait start\n");
     doneEvent.waitMask((uint64_t(1) << uint64_t(threads.size())) - 1);
-    TP_VERBOSE("all done - wait end");
+    TP_VERBOSE("all done - wait end\n");
 }
 
 SimpleThreadPool::~SimpleThreadPool() { shutdownThreads(); }
@@ -65,17 +65,18 @@ void SimpleThreadPool::doThread(int thread_id)
         wakeEvent.wakeMask(mask);
     };
 
-    TP_VERBOSE("startup %i", thread_id);
+    TP_VERBOSE("startup %i\n", thread_id);
     SI_TG_PROFILE("worker_thread");
     while (running)
     {
         {
             // debug("exec", "[%i] idle started %u", thread_id, uint32_t(wakeEvent.wakeMask.load()));
             SI_TG_PROFILE("thread_idle");
-            TP_VERBOSE("[%i] thread wait", thread_id);
+            TP_VERBOSE("[%i] thread idle wait\n", thread_id);
             doneEvent.wakeThread(thread_id);
+            wakeEvent.wakeMask((uint64_t(1) << uint64_t(threads.size())) - 1);
             idleEvent.waitThread(thread_id);
-            TP_VERBOSE("[%i] thread wake", thread_id);
+            TP_VERBOSE("[%i] thread idle wake\n", thread_id);
             // debug("exec", "[%i] idle ended", thread_id);
         }
 
@@ -84,7 +85,7 @@ void SimpleThreadPool::doThread(int thread_id)
         {
 #if !TP_SKIP_EXECUTION
             bool end = false;
-            constexpr int MAX_ATTEMPTS = 32;
+            constexpr int MAX_ATTEMPTS = 4;
             for (int i = 0; i < MAX_ATTEMPTS; i++)
             {
                 const ThreadedTaskGraphExecutor::ThreadResult result = executor.doThread(thread_id);
@@ -99,19 +100,21 @@ void SimpleThreadPool::doThread(int thread_id)
 
             if (useWait)
             {
-                SI_TG_PROFILE_INTERNAL("thread_wait");
+                SI_TG_PROFILE("thread_wait");
+                TP_VERBOSE("[%i] thread pause wait\n", thread_id);
                 wakeEvent.waitThread(thread_id);
+                TP_VERBOSE("[%i] thread pause wake\n", thread_id);
             }
         }
     }
-    TP_VERBOSE("shutdown %i", thread_id);
+    TP_VERBOSE("shutdown %i\n", thread_id);
     thisThreadId = -1;
 }
 
 void SimpleThreadPool::wakeAll()
 {
     SI_TG_ASSERT(doneEvent.word == 0);
-    TP_VERBOSE("wake all");
+    TP_VERBOSE("wake all\n");
     idleEvent.wakeMask((uint64_t(1) << uint64_t(threads.size())) - 1);
 }
 
