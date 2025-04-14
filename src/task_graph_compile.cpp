@@ -375,7 +375,7 @@ static void resolve_resources_and_dependencies(PrebuiltTaskGraph &prebuilt, cons
 
 bool prebuild_task_graph(PrebuiltTaskGraph &prebuilt, const TaskGraph &graph)
 {
-    internal::log_debug("building graph\n");
+    SI_TG_VERBOSE(0, "building graph\n");
     const uint32_t totalTaskCount = task_graph_resolve_size(graph);
     prebuilt.taskGraph.resize(totalTaskCount);
     prebuilt.exclusionGraph.resize(totalTaskCount);
@@ -387,6 +387,7 @@ bool prebuild_task_graph(PrebuiltTaskGraph &prebuilt, const TaskGraph &graph)
     SI_TG_ASSERT(totalTaskCount == prebuilt.taskData.size());
 
     // validate no cycles
+    SI_TG_VERBOSE(1, "  validating graph\n");
     Vector<uint64_t> &stack = prebuilt.traversalData;
     bool isValid = true;
     prebuilt.taskGraph.setAllFlags(0, false);
@@ -410,33 +411,45 @@ bool prebuild_task_graph(PrebuiltTaskGraph &prebuilt, const TaskGraph &graph)
         return false;
 
     // normalize order
+    SI_TG_VERBOSE(1, "  normalizing graph\n");
     for (uint32_t baseId = 0; baseId < prebuilt.taskGraph.size(); baseId++)
     {
-        prebuilt.taskGraph.setAllFlags(0, false);
         prebuilt.traversalData.clear();
+        prebuilt.traversalData.resize(prebuilt.taskGraph.size(), 0);
+        uint32_t bfsPos = prebuilt.traversalData.size();
         prebuilt.traversalData.push_back(baseId);
         prebuilt.taskGraph.setFlag(baseId, 0, true);
-        uint32_t bfsPos = 0;
         while (bfsPos < prebuilt.traversalData.size())
         {
             const uint64_t idAndDepth = uint64_t(prebuilt.traversalData[bfsPos++]);
             const uint32_t curId = uint32_t(idAndDepth);
             const uint32_t depth = uint32_t(idAndDepth >> uint64_t(32));
-            if (depth != 0)
+            if (prebuilt.traversalData[curId] >= depth && depth > 0)
+                continue;
+            prebuilt.traversalData[curId] = depth;
+            if (baseId != curId)
                 prebuilt.exclusionGraph.setConnectedBoth(baseId, curId, false);
-            if (depth > 1)
-                prebuilt.taskGraph.setConnected(baseId, curId, false);
             prebuilt.taskGraph.iterEdges(curId, [&] (uint32_t nextId) {
-                if (prebuilt.taskGraph.getFlag(nextId, 0))
+                if (prebuilt.traversalData[curId] >= depth + 1)
                     return;
-                prebuilt.taskGraph.setFlag(nextId, 0, true);
                 prebuilt.traversalData.push_back((uint64_t(depth + 1) << uint64_t(32)) | uint64_t(nextId));
             });
         }
+        prebuilt.taskGraph.iterEdges(baseId, [&] (uint32_t connId) {
+            if (prebuilt.traversalData[connId] > 1)
+                prebuilt.taskGraph.setConnected(baseId, connId, false);
+        });
+    }
+
+    for ([[maybe_unused]] const PrebuiltTaskGraph::SubGraphData &sgData : prebuilt.subGraphData)
+    {
+        SI_TG_ASSERT(sgData.tasksStart < sgData.tasksEnd);
+        SI_TG_ASSERT(!prebuilt.taskGraph.isConnected(sgData.entryTaskId, sgData.exitTaskId));
     }
 
     SI_TG_ASSERT(prebuilt.taskData.size() == prebuilt.taskGraph.size());
     SI_TG_ASSERT(prebuilt.taskData.size() == prebuilt.exclusionGraph.size());
+    SI_TG_VERBOSE(1, "  done\n");
 
     return true;
 }
@@ -497,12 +510,14 @@ void print_compiled_graph(const CompiledTaskGraph &compiled)
 
 bool compile_task_graph(CompiledTaskGraph &compiled, PrebuiltTaskGraph &prebuilt, strategy::MergeSubgroupsState &c_state)
 {
+    SI_TG_VERBOSE(0, "compiling graph - merge subgroups strategy\n");
     using GroupData = strategy::MergeSubgroupsState::GroupData;
     using SubgroupData = strategy::MergeSubgroupsState::SubgroupData;
     using TaskData = strategy::MergeSubgroupsState::TaskData;
     using MergeState = strategy::MergeSubgroupsState::MergeState;
 
     // build groups
+    SI_TG_VERBOSE(1, "  building groups\n");
     prebuilt.exclusionGraph.setFlagCount(1);
 
     {
@@ -540,11 +555,14 @@ bool compile_task_graph(CompiledTaskGraph &compiled, PrebuiltTaskGraph &prebuilt
             }
         }
     }
+    SI_TG_VERBOSE(2, "    added groups (%i)\n", int(c_state.groups.size()));
 
     // merge subgroups
     for (GroupData &group : c_state.groups)
     {
         group.subgroupCnt = group.subgroups.size();
+        if (group.subgroupCnt < 64)
+            continue;
 
         auto mergeSubgroups = [&] (uint64_t dst, uint64_t src)
         {
@@ -621,34 +639,35 @@ bool compile_task_graph(CompiledTaskGraph &compiled, PrebuiltTaskGraph &prebuilt
             state.pairCnt = 0;
         };
 
-        std::vector<uint32_t> subgroupsToMerge;
-        subgroupsToMerge.reserve(group.subgroups.size());
+
+        SI_TG_VERBOSE(1, "  merging large group (%i)\n", int(group.subgroups.size()));
+        c_state.subgroupsToMerge.reserve(group.subgroups.size());
 
         while (group.subgroupCnt > 64)
         {
-            subgroupsToMerge.clear();
+            c_state.subgroupsToMerge.clear();
             for (uint32_t sg = 0; sg < group.subgroups.size(); sg++)
             {
                 if (group.subgroups[sg].tasks.empty())
                     continue;
-                subgroupsToMerge.push_back(sg);
+                c_state.subgroupsToMerge.push_back(sg);
             }
-            std::sort(subgroupsToMerge.begin(), subgroupsToMerge.end(), [&] (uint32_t a, uint32_t b) {
+            std::sort(c_state.subgroupsToMerge.begin(), c_state.subgroupsToMerge.end(), [&] (uint32_t a, uint32_t b) {
                 return group.subgroupExclusionGraph.getEdges(a).count() > group.subgroupExclusionGraph.getEdges(b).count();
             });
-            while (int(group.subgroupCnt) - int(subgroupsToMerge.size()) / 2 < 64)
-                subgroupsToMerge.pop_back();
+            while (int(group.subgroupCnt) - int(c_state.subgroupsToMerge.size()) / 2 < 64)
+                c_state.subgroupsToMerge.pop_back();
 
             const auto runSinglePass = [&] (MergeState &state)
             {
                 while (true)
                 {
                     int valueChange = 0;
-                    for (uint32_t sg1: subgroupsToMerge)
+                    for (uint32_t sg1 : c_state.subgroupsToMerge)
                     {
                         int bestVal = -1;
                         int bestIdx = -1;
-                        for (uint32_t sg2: subgroupsToMerge)
+                        for (uint32_t sg2 : c_state.subgroupsToMerge)
                         {
                             if (sg1 == sg2)
                                 continue;
@@ -710,11 +729,12 @@ bool compile_task_graph(CompiledTaskGraph &compiled, PrebuiltTaskGraph &prebuilt
                     mergeSubgroups(sg1, baseState.sgPair[sg1]);
                 group.subgroupExclusionGraph.iterEdges(sg1, [&] ([[maybe_unused]] uint32_t sg2) { SI_TG_ASSERT(!group.subgroups[sg2].tasks.empty()); });
             }
-            internal::log_debug("  merged %i/%i subgroups, value: %i, remaining %i\n", baseState.pairCnt * 2, cntBeforeMerge, baseState.totalValue, group.subgroupCnt);
+            SI_TG_VERBOSE(2, "    merged %i/%i subgroups, value: %i, remaining %i\n", baseState.pairCnt * 2, cntBeforeMerge, baseState.totalValue, group.subgroupCnt);
         }
     }
 
     // merge small groups
+    SI_TG_VERBOSE(1, "  merging small groups (%i)\n", int(c_state.groups.size()));
     while (true)
     {
         int prevCandidateIdx = -1;
@@ -748,8 +768,10 @@ bool compile_task_graph(CompiledTaskGraph &compiled, PrebuiltTaskGraph &prebuilt
         if (!anyMerged)
             break;
     }
+    SI_TG_VERBOSE(1, "    done (%i)\n", int(c_state.groups.size()));
 
     // cleanup subgroups & init masks
+    SI_TG_VERBOSE(1, "  cleaning up\n");
     for (GroupData &group : c_state.groups)
     {
         // init actual index
@@ -777,6 +799,7 @@ bool compile_task_graph(CompiledTaskGraph &compiled, PrebuiltTaskGraph &prebuilt
     }
 
     // write to compiled
+    SI_TG_VERBOSE(1, "  writing to compiled graph\n");
     c_state.allTasks.resize(prebuilt.taskData.size());
     for (uint32_t i = 0; i < prebuilt.taskData.size(); i++)
     {
@@ -860,6 +883,7 @@ bool compile_task_graph(CompiledTaskGraph &compiled, PrebuiltTaskGraph &prebuilt
             compiled.subGraphData.push_back(c_state.allTasks[prebuilt.subGraphTasks[i]].remapTaskId);
     }
 
+    SI_TG_VERBOSE(1, "  done\n");
     return true;
 }
 

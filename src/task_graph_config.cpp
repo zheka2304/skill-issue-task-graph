@@ -13,6 +13,7 @@ void assert_handler(const char *str, ...)
     va_list args;
     va_start(args, str);
     vfprintf(stderr, str, args);
+    putc('\n', stderr);
     va_end(args);
     fflush(stderr);
     assert(0);

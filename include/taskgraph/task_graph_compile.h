@@ -73,6 +73,7 @@ struct MergeSubgroupsState
     FixedVector<SubgroupData, 64, true> subgroups;
     FixedVector<uint32_t, 1, true> tasks;
     Vector<uint32_t> nextTasks;
+    Vector<uint32_t> subgroupsToMerge;
     MergeState mergeState;
 
     MergeSubgroupsState() = default;
