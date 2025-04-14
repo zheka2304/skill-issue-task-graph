@@ -388,6 +388,41 @@ bool TaskGraph::validateAndNormalize(CompiledTaskGraph &compiled)
         }
     }
 
+    // merge small groups
+    while (true)
+    {
+        int prevCandidateIdx = -1;
+        bool anyMerged = false;
+        for (int i = 0; i < groups.size(); i++)
+        {
+            if (prevCandidateIdx >= 0 && groups[i].subgroupCnt + groups[prevCandidateIdx].subgroupCnt <= 32)
+            {
+                GroupData &dst = groups[prevCandidateIdx];
+                GroupData &src = groups[i];
+                dst.subgroupExclusionGraph.resize(dst.subgroupExclusionGraph.getVertexCount() + src.subgroupExclusionGraph.getVertexCount());
+                for (int sg1 = 0; sg1 < src.subgroups.size(); sg1++)
+                {
+                    if (src.subgroups[sg1].tasks.empty())
+                        continue;
+                    src.subgroupExclusionGraph.iterEdges(sg1, [&] (uint32_t sg2) {
+                        dst.subgroupExclusionGraph.setConnectedBoth(sg1 + dst.subgroups.size(), sg2 + dst.subgroups.size(), true);
+                    });
+                }
+                for (SubgroupData &sg : src.subgroups)
+                    dst.subgroups.push_back(std::move(sg));
+                dst.subgroupCnt += src.subgroupCnt;
+                src.subgroupCnt = 0;
+                src.subgroups.clear();
+                anyMerged = true;
+            }
+            else if ((prevCandidateIdx < 0 || groups[i].subgroupCnt < groups[prevCandidateIdx].subgroupCnt) && groups[i].subgroupCnt < 32)
+                prevCandidateIdx = i;
+        }
+        groups.erase(std::remove_if(groups.begin(), groups.end(), [&] (auto &g) { return g.subgroups.empty(); }), groups.end());
+        if (!anyMerged)
+            break;
+    }
+
     // cleanup subgroups & init masks
     for (GroupData &group : groups)
     {
@@ -496,7 +531,7 @@ bool TaskGraph::validateAndNormalize(CompiledTaskGraph &compiled)
         for (int subgroupId = group.subGroupsStart; subgroupId < group.subGroupsEnd; subgroupId++)
         {
             CompiledTaskGraph::TaskSubGroup &subgroup = compiled.allSubGroups[subgroupId];
-            logger::debug_inline("graph", "  subgroup %02i (%3i) [", subgroupId, subgroup.tasksEnd - subgroup.tasksStart);
+            logger::debug_inline("graph", "  subgroup %02i (%3i) [", subgroupId - group.subGroupsStart, subgroup.tasksEnd - subgroup.tasksStart);
             for (int i = 0; i < 64; i++)
                 logger::debug_inline("graph", "%i", (subgroup.excludedMask >> uint64_t(i)) & uint64_t(1));
             logger::debug_inline("graph", "]");
