@@ -251,9 +251,9 @@ bool ThreadedTaskGraphExecutor::doGroupUntilSubgroupEnter(ThreadCtx & SI_TG_REST
 
 void ThreadedTaskGraphExecutor::validateAllDone() const
 {
-    for (const ThreadCtx &ctx : threadCtxArray)
+    for ([[maybe_unused]] const ThreadCtx &ctx : threadCtxArray)
         SI_TG_ASSERT(!ctx.isSubgroupOwned);
-    for (const CompiledTaskGraph::Task &task : graphPtr->allTasks)
+    for ([[maybe_unused]] const CompiledTaskGraph::Task &task : graphPtr->allTasks)
         SI_TG_ASSERT(task.state.load(std::memory_order_relaxed) == CompiledTaskGraph::Task::STATE_DONE);
 }
 
@@ -467,11 +467,11 @@ void ThreadedTaskGraphExecutor::doSubGraphTask(ThreadCtx& ctx, uint32_t task_id)
     SI_TG_ASSERT(task_id == subgraphEntryTask || task_id == subgraphExitTask);
     SI_TG_ASSERT(!task.allowToRunInParallelWithItself);
 
-    const auto resetTaskStateAndDeps = [&] (uint32_t sg_task_id, bool expect_done)
+    const auto resetTaskStateAndDeps = [&] (uint32_t sg_task_id, [[maybe_unused]] bool expect_done)
     {
         CompiledTaskGraph::Task &subGraphTask = graph.allTasks[sg_task_id];
         SI_TG_ASSERT(sg_task_id != subgraphEntryTask);
-        uint8_t curState = subGraphTask.state.load(std::memory_order_relaxed);
+        [[maybe_unused]] uint8_t curState = subGraphTask.state.load(std::memory_order_relaxed);
         SI_TG_ASSERT(!expect_done || curState == CompiledTaskGraph::Task::STATE_DONE);
         uint64_t deps = subGraphTask.dependencies.load(std::memory_order_relaxed);
         deps >>= uint64_t(32u);

@@ -595,7 +595,7 @@ bool compile_task_graph(CompiledTaskGraph &compiled, PrebuiltTaskGraph &prebuilt
             return value;
         };
 
-        const auto makePair = [&] (MergeState &state, uint32_t sg1, uint32_t sg2)
+        [[maybe_unused]] const auto makePair = [&] (MergeState &state, uint32_t sg1, uint32_t sg2)
         {
             int valueChange = calcPairSetValue(state, sg1, sg2);
             state.totalValue += valueChange;
@@ -663,7 +663,7 @@ bool compile_task_graph(CompiledTaskGraph &compiled, PrebuiltTaskGraph &prebuilt
                         }
                         if (bestIdx >= 0)
                         {
-                            SI_TG_ASSERT(makePair(state, sg1, bestIdx) == bestVal);
+                            makePair(state, sg1, bestIdx);
                             valueChange += bestVal;
                         }
                     }
@@ -710,7 +710,7 @@ bool compile_task_graph(CompiledTaskGraph &compiled, PrebuiltTaskGraph &prebuilt
                     continue;
                 if (baseState.sgPair[sg1] >= 0)
                     mergeSubgroups(sg1, baseState.sgPair[sg1]);
-                group.subgroupExclusionGraph.iterEdges(sg1, [&] (uint32_t sg2) { SI_TG_ASSERT(!group.subgroups[sg2].tasks.empty()); });
+                group.subgroupExclusionGraph.iterEdges(sg1, [&] ([[maybe_unused]] uint32_t sg2) { SI_TG_ASSERT(!group.subgroups[sg2].tasks.empty()); });
             }
             internal::log_debug("  merged %i/%i subgroups, value: %i, remaining %i\n", baseState.pairCnt * 2, cntBeforeMerge, baseState.totalValue, group.subgroupCnt);
         }

@@ -51,11 +51,11 @@ struct CompiledTaskGraph
         static constexpr uint8_t STATE_PENDING = 1;
         static constexpr uint8_t STATE_EXECUTING = 2;
         static constexpr uint8_t STATE_DONE = 3;
+
         std::atomic<uint8_t> state = STATE_NONE;
         bool isPendingOnStart = false;
         bool allowToRunInParallelWithItself = false;
 
-        std::atomic<uint64_t> dependencies = 0;
         uint32_t nextTasksStart;
         uint32_t nextTasksEnd;
 
@@ -63,8 +63,11 @@ struct CompiledTaskGraph
         uint32_t subGroupId;
         int32_t subgraphDataIdx = -1;
 
+        std::atomic<uint64_t> dependencies = 0;
         TaskData taskData;
 
+        // 56 bytes
+        char _falseSharingPad[64 - 56];
 
         Task() = default;
         Task(Task &&rhs)

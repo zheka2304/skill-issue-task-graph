@@ -56,9 +56,9 @@ void append_random_task_graph(si::tg::TaskGraph &graph, int sz, int res_ofs)
     {
         if (i >= sz - 1)
             continue;
-        for (int n = 0; n < 0; n++)
+        for (int n = 0; n < 10; n++)
             graph.setNext(tasks[i], tasks[i + 1 + rand() % (sz - i - 1)]);
-        for (int n = 0; n < 5; n++)
+        for (int n = 0; n < 0; n++)
         {
             uint64_t res = res_ofs + rand() % 200;
             si::tg::ResourceUsage usage = rand() % 5 == 0 ? si::tg::ResourceUsage::LOCKING : si::tg::ResourceUsage::SHARED;
