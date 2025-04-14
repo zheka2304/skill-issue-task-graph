@@ -1,4 +1,4 @@
-# Skill Issue Task-Graph
+# Skill Issue Task Graph
 
 A lightweight, easy to integrate and highly customizable task graph library I've made in my free time. Intended to be used as a task scheduler for games, but not limited to this.
 
@@ -7,8 +7,9 @@ Features:
 - Resource usage declaration for tasks
 - Running multiple invocations of one task, parallel execution when possible, determine count of invocations at runtime
 - Sub-graphs with an option to determine number of executions at runtime, to enable control flow
-- [Planned] Thread affinity mask for tasks
 - Ahead-of-time task graph compilation
+- Putting threads to sleep and waking them
+- [Planned] Thread affinity mask for tasks
 
 Note that this is not a production-ready solution, but rather a project, I've made for fun. It must be properly tested and benchmarked before using it for real.
 
@@ -18,6 +19,12 @@ Note that this is not a production-ready solution, but rather a project, I've ma
 2. Add `include` directory to your include path
 3. Build all files in `src`
 4. Customize if needed in `task_graph_config.h` and `task_graph_config.cpp`
+
+## Benchmarks
+
+I'm too lazy to benchmark it properly. *In a synthetic test with 1000-2000 empty tasks with 0-10 random connections each, with up to 8 threads, it usually runs as fast as similar graph in [taskflow](https://github.com/taskflow/taskflow) or faster, but likely in some other cases it might struggle.* If you are really that interested, you can test it yourself on some scenarios, that closer to real-life usage.
+
+The whole point here is not the performance, but rather having more features, main one being resource usage declaration and resolution.
 
 ## Feature Usage
 
@@ -109,4 +116,120 @@ NOTE: Sub-graphs are kept as pointers internally. Managing lifetimes of each sub
 `taskNumFn` can be specified for sub-graphs (different invocations of sub-graph will always run in sequence, not in parallel):
 ```c++
 taskGraph.addSubGraphTask(&subGraph1, {.taskNumFn = (void*) { return 10; }});
+```
+
+### Integrating into Custom Thread Pool
+
+Create an executor
+```c++
+si::tg::ThreadedTaskGraphExecutor executor;
+executor.graphPtr = &compiledGraph;
+```
+
+Before running threads
+```c++
+executor.prepareForExecution(THREAD_NUM);
+```
+
+In worker thread:
+```c++
+while (true)
+{
+    // execute for given thread, until there is anything to execute
+    // threadId = [0; THREAD_NUM)
+    const auto result = executor.doThread(threadId);
+    if (result == si::tg::ThreadResult::DONE)
+        // this thread has finished all tasks it could, exit
+        return;
+    // otherwise - repeat
+}
+```
+
+Additionally, you can implement waiting when thread is idle:
+```c++
+executor.setWakeCallback(threadId, [] (uint64_t wake_mask) {
+    // N-th set bit in wake_mask means you should wake
+    // thread with index N. This is just a recommendation, you can ignore it or wake
+    // other sleeping thread.
+});
+while (true)
+{
+    // do several attempts
+    for (int i = 0; i < 4; i++)
+        if (executor.doThread(threadId) == si::tg::ThreadResult::DONE)
+            return;
+    // wait until woken
+}
+```
+
+## Execution Algorithm
+
+Compiled graph has 3 levels of hierarchy - groups, subgroups and individual tasks
+
+1. Group - tasks split between groups in a way, that it is guaranteed, that any pair of tasks from different groups can share resources (they either have shared usage or can't run in parallel due to ordering).
+2. Subgroup - group contains up to 64 subgroups. 64 is chosen, because commonly it is the largest atomic word. Each subgroup has a 64-bit mask, that determines, which subgroups from the same group it can't run in parallel with.
+3. Task - a single task belongs to subgroup
+
+Compilation is done in 2 steps:
+1. Pre-building and normalizing graph
+    - recursively resolve and merge all sub-graphs, generate sub-graph entry and exit tasks
+    - build task exclusion graph from resource usage and ordering
+    - normalize ordering by eliminating redundant connections
+2. Compiling graph - this step is a tricky part. Ideally you want each subgroup to have only 1 task, but there is a requirement of max of 64 subgroups. So trade-offs must be made. Different compilation strategies can be implemented:
+    - Merge strategy - this is the only one currently made. It progressively merges pairs of subgroups to minimize number of edges in resulting exclusion graph. Each pass reduces the number of subgroups by half, but it is still pretty slow.
+    - [Planned] Ordering strategy - opposite approach to merge strategy - gather groups of 64 tasks each and then order all tasks between these groups, so they can never execute in parallel.
+
+Execution algorithm is best described via pseudocode (not complete):
+```
+prepareForExecution():
+    - allocate and init enough thread contexts
+    reset all tasks:
+        - reset fulfilled dependency count
+        - reset state to NONE or PENDING for tasks with no dependencies
+        - set bits in pending masks for subgroups, that contain pending tasks
+
+doThread():
+    - get context for this thread
+    - randomly shuffle group indices to lower contention
+ 
+    while we have not failed all groups in a row:
+        - load pending and executing subgroups masks for current group
+        for each set bit in pending mask:
+            try acquiring subgroup (CAS loop):
+                - get subgroup exclusion mask
+                - compare it against previously loaded executing mask
+                - in case they are exclusive, we've failed
+            if acquiring subgroup failed and it is in execution mask:
+                - try atomically acquiring variable count task from this subgroup
+                - in case of success, execute this task
+                - atomically decrement number of variable count tasks for this subgroup
+                if it was the last task - we are now owning the subgroup:
+                    - markTaskDone()
+                    - subgroup is now owned by this thread
+            if failed to acquire subgroup:
+                - add to failed subgroups counter and continue
+                - continue to the next pending subgroup
+            execute tasks in subgroup:
+                - go through tasks, skip all, that are not pending
+                if this is normal task:
+                    - just execute it
+                    - mark task done
+                    - restart this subgroup execution
+                if this is variable count task, that can run in parallel with itself:
+                    - setup this subgroup variable count task data
+                    - return, without resetting executing bit for this subgroup
+            - reset failed groups and subgroups counters
+        if failed subgroup count is large enough:
+            - increment failed groups count
+            - move to next group in randomly shuffled list
+
+markTaskDone(task):
+    - set task state to done
+    for all next tasks:
+        if next task has more than 1 dependency:
+            - increment fulfilled dependency count by 1
+            if not all dependencies yet fulfilled:
+                - continue
+        - set next task state to pending
+        - set bit to next task's group pending mask
 ```
