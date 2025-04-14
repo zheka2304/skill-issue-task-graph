@@ -19,7 +19,7 @@ void init_random_task_graph(TaskGraph &graph)
     {
         for (int n = 0; n < 5; n++)
             graph.setNext(i, i + 1 + rand() % (graph.allNodes.size() - i - 1));
-        for (int n = 0; n < 40; n++)
+        for (int n = 0; n < 20; n++)
             graph.addResource(i, rand() % 200, rand() % 5 == 0);
     }
 }
@@ -76,10 +76,11 @@ CompiledTaskGraph compile_task_graph(const TaskGraph &raw)
 
 int main()
 {
+
     sie::logger::init_default_log_handler("log.txt");
 
     TaskGraph graph;
-    if (false)
+    if (1)
         init_random_task_graph(graph);
     else
     {
@@ -95,9 +96,7 @@ int main()
         graph.setNext(t3, t4);
     }
 
-    graph.validateAndNormalize();
-    graph.buildFibers();
-    graph.dumpToLog();
+    assert(graph.validateAndNormalize());
 
     /*
     CompiledTaskGraph graph;

@@ -12,108 +12,78 @@ namespace sie
 
 struct CompiledTaskGraph
 {
-    struct TaskExecutionState
+    struct TaskGroup
     {
-        static constexpr uint32_t DONE_BIT = 0x80000000u;
-        static constexpr uint32_t EXECUTING_BIT = 0x40000000u;
-        static constexpr uint32_t PENDING_BIT = 0x20000000u;
-        std::atomic<uint32_t> state = 0;
+        std::atomic<uint64_t> pending = 0;
+        std::atomic<uint64_t> executing = 0;
 
-        TaskExecutionState() = default;
-        TaskExecutionState(TaskExecutionState &&rhs) : state(rhs.state.load(std::memory_order_relaxed)) {}
+        uint32_t subGroupsStart;
+        uint32_t subGroupsEnd;
+        // 24 bytes
+        char _falseSharingPad[128 - 24];
 
-        bool setPendingAndPreCheck();
-        bool tryExec();
-        void endExec();
-        bool checkDone();
-        bool tryLock();
-        bool unlockAndCheckPending();
+        TaskGroup() = default;
+        TaskGroup(const TaskGroup &rhs) { memcpy(this, &rhs, offsetof(TaskGroup, _falseSharingPad)); }
     };
 
-    struct TaskNode
+    struct TaskSubGroup
     {
+        std::atomic<uint64_t> curVarTask = 0;
+        std::atomic<int64_t> remainingVarTasks = 0;
+        uint64_t excludedMask = 0;
+
+        uint32_t tasksStart;
+        uint32_t tasksEnd;
+        // 32 bytes
+        char _falseSharingPad[64 - 32];
+
+        TaskSubGroup() = default;
+        TaskSubGroup(const TaskSubGroup &rhs) { memcpy(this, &rhs, offsetof(TaskSubGroup, _falseSharingPad)); }
+    };
+
+    struct Task
+    {
+        static constexpr uint8_t STATE_NONE = 0;
+        static constexpr uint8_t STATE_PENDING = 1;
+        static constexpr uint8_t STATE_EXECUTING = 2;
+        static constexpr uint8_t STATE_DONE = 3;
+        std::atomic<uint8_t> state = STATE_NONE;
+        bool isPendingOnStart = false;
+
+        std::atomic<uint64_t> dependencies = 0;
+        std::vector<uint32_t> nextTasks;
+
+        uint32_t groupId;
+        uint32_t subGroupId;
+
         TaskFnPtr task;
-        uint32_t queueId;
-        std::vector<uint32_t> nextQueues; // queues to start after this task is executed
+        VarTaskFnPtr varTask;
+        bool allowToRunInParallelWithItself;
 
-        TaskExecutionState state;
-        std::vector<int> lockedTasks;
+        Task() = default;
+        Task(Task &&rhs)
+        {
+            memcpy(this, &rhs, sizeof(Task));
+            new (&rhs) Task(); // reset
+        }
     };
 
-    // signal nodes
+    std::vector<TaskGroup> allGroups;
+    std::vector<TaskSubGroup> allSubGroups;
+    std::vector<Task> allTasks;
 
-    struct SignalTreeNodeRoot
-    {
-        static constexpr bool is_root = true;
-        static constexpr bool is_leaf = false;
-
-        std::atomic<uint64_t> counter = 0;
-        uint8_t falseSharingPad[128 - 8];
-
-        SignalTreeNodeRoot() = default;
-        SignalTreeNodeRoot(SignalTreeNodeRoot&& rhs) : counter(rhs.counter.load(std::memory_order_relaxed))
-        {}
-    };
-
-    struct SignalTreeNodeMiddle
-    {
-        static constexpr bool is_root = false;
-        static constexpr bool is_leaf = false;
-        std::atomic<uint64_t> counter = 0;
-        uint8_t falseSharingPad[64 - 8];
-
-        SignalTreeNodeMiddle() = default;
-        SignalTreeNodeMiddle(SignalTreeNodeMiddle&& rhs) : counter(rhs.counter.load(std::memory_order_relaxed))
-        {}
-    };
-
-    struct SignalTreeNodeLeaf
-    {
-        static constexpr bool is_root = false;
-        static constexpr bool is_leaf = true;
-
-        std::atomic<uint64_t> counter = 0;
-        std::atomic<uint64_t> requirements = 0;
-        std::vector<uint32_t> taskQueue;
-        uint32_t taskQueuePos = 0;
-
-        SignalTreeNodeLeaf() = default;
-        SignalTreeNodeLeaf(SignalTreeNodeLeaf&& rhs) :
-                counter(rhs.counter.load(std::memory_order_relaxed)),
-                requirements(rhs.requirements.load(std::memory_order_relaxed)),
-                taskQueue(std::move(rhs.taskQueue)),
-                taskQueuePos(std::exchange(rhs.taskQueuePos, 0u))
-        {}
-
-        void initBeforeStart();
-        void setRequirementsCount(int count) { requirements.store(uint64_t(count) << 32u, std::memory_order_relaxed); }
-    };
-
-    SignalTreeNodeRoot treeRootNode;
-    std::vector<SignalTreeNodeMiddle> treeMiddleNodes;
-    std::vector<SignalTreeNodeLeaf> queueNodes;
-
-    uint32_t treeDepthMinusTwo = 0;
-    uint32_t treeLeafHalfCount = 0;
-    std::vector<TaskNode> allTasks;
-
-    static uint32_t nextPowOf2(uint32_t v);
-
-    void rebuildTree();
-
-    void initBeforeStart();
-
-    void setTreeNodeRequirement(uint32_t nodeId);
-
-    void setTreeNode(uint32_t nodeId);
-
-    template<typename T>
-    bool selectNodeImpl(T& node);
-
-    uint32_t selectTreeNode();
-
-    bool executeQueueWhileCan(uint32_t thisQueueId);
+    void doThread();
+    bool checkAllTasksDone();
+    bool checkAllTasksExecutingOrDone();
+    bool tryEnterSubgroup(uint32_t group_id, uint32_t subgroup_id, bool loop);
+    std::pair<uint32_t, uint32_t> tryAcquireVarTask(uint32_t group_id, uint32_t subgroup_id);
+    void leaveSubgroup(uint32_t group_id, uint32_t subgroup_id);
+    bool doSubGroup(uint32_t group_id, uint32_t subgroup_id);
+    bool doVarTask(uint32_t subgroup_id, uint32_t task_id, uint32_t var_task_idx);
+    bool afterTaskDone(uint32_t task_id);
 };
+
+
 
 struct TaskGraphExecutor
 {
