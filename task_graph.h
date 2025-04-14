@@ -130,6 +130,13 @@ struct BaseGraph
     // vertex count
     int32_t size() const { return vertexCnt; }
 
+    void reserve(int newSize)
+    {
+        const uint32_t newWordCnt = uint32_t((uint32_t(newSize) + 63u) / 64u);
+        vertexFlags.reserve(newSize * vertexFlagCount);
+        connections.reserve(newSize * newWordCnt);
+    }
+
     void resize(int newSize)
     {
         SI_TG_ASSERT(newSize >= 0);
@@ -199,7 +206,7 @@ struct BaseGraph
     }
 
     template<typename F>
-    void iterEdges(uint32_t v1, F &&f) { getEdges(v1).iter(std::forward<F>(f)); }
+    void iterEdges(uint32_t v1, F &&f) const { const_cast<BaseGraph *>(this)->getEdges(v1).iter(std::forward<F>(f)); }
 
     void setFlagCount(uint32_t cnt)
     {
@@ -298,7 +305,7 @@ struct TaskData
     VarTaskFnPtr taskVarFn = nullptr;
     void* userData = nullptr;
 
-    bool valid() const { return taskFn != nullptr; }
+    bool valid() const { return taskFn != nullptr || taskVarFn != nullptr; }
 };
 
 struct TaskGraph
@@ -306,7 +313,7 @@ struct TaskGraph
     TaskGraph() = default;
     template<typename Allocator>
     explicit TaskGraph(const Allocator &allocator) :
-        taskData(allocator), taskSubgraph(allocator), taskOrderGraph(allocator), taskResourceUsage(allocator) {}
+        taskData(allocator), taskSubGraph(allocator), taskOrderGraph(allocator), taskResourceUsage(allocator) {}
     TaskGraph(const TaskGraph &) = delete;
     void operator=(const TaskGraph &) = delete;
     TaskGraph(TaskGraph &&) = default;
@@ -314,12 +321,13 @@ struct TaskGraph
     void copyFrom(const TaskGraph &rhs)
     {
         taskData = rhs.taskData;
-        taskSubgraph = rhs.taskSubgraph;
+        taskSubGraph = rhs.taskSubGraph;
         taskResourceUsage = rhs.taskResourceUsage;
         taskOrderGraph.copyFrom(rhs.taskOrderGraph);
     }
 
     TaskId addTask(const TaskData &data = {});
+    TaskId addSubGraphTask(const TaskData &data, const TaskGraph *graph);
     void setTaskData(TaskId task_id, const TaskData &data);
     void setNext(TaskId task_id, TaskId next_id, bool set = true);
     void setResourceUsage(TaskId task_id, uint64_t resource_id, ResourceUsage usage);
@@ -328,7 +336,7 @@ struct TaskGraph
 
 public:
     Vector<TaskData> taskData;
-    Vector<const TaskGraph *> taskSubgraph;
+    Vector<const TaskGraph *> taskSubGraph;
     BaseGraph taskOrderGraph;
     struct TaskResourceUsageData
     {
@@ -344,12 +352,22 @@ struct PrebuiltTaskGraph
     Vector<TaskData> taskData;
     BaseGraph taskGraph;
     BaseGraph exclusionGraph;
-    Vector<uint32_t> cycleDetectStack;
+
+    struct SubGraphData
+    {
+        uint32_t entryTaskId;
+        uint32_t exitTaskId;
+        uint32_t tasksStart;
+        uint32_t tasksEnd;
+    };
+    Vector<SubGraphData> subGraphData;
+    Vector<uint32_t> subGraphTasks;
+    Vector<uint64_t> traversalData;
 
     PrebuiltTaskGraph() = default;
     template<typename Allocator>
     explicit PrebuiltTaskGraph(const Allocator &allocator) :
-            taskData(allocator), taskGraph(allocator), exclusionGraph(allocator), cycleDetectStack(allocator) {}
+            taskData(allocator), taskGraph(allocator), exclusionGraph(allocator), subGraphData(allocator), subGraphTasks(allocator), traversalData(allocator) {}
 };
 
 bool prebuild_task_graph(PrebuiltTaskGraph &prebuilt_graph, const TaskGraph &graph);
@@ -364,7 +382,7 @@ struct MergeSubgroupsState
 {
     struct MergeState
     {
-        std::vector<int> sgPair;
+        Vector<int> sgPair;
         int totalValue;
         int pairCnt;
     };
@@ -402,7 +420,10 @@ struct MergeSubgroupsState
     template<typename Allocator>
     explicit MergeSubgroupsState(const Allocator &allocator) :
             groups(allocator), allTasks(allocator), subgroupExclusionGraph(allocator),
-            subgroups(allocator), tasks(allocator), nextTasks(allocator), mergeState(allocator)  {}
+            subgroups(allocator), tasks(allocator), nextTasks(allocator), mergeState(allocator)
+    {
+        mergeState.sgPair = Vector<int>(allocator);
+    }
 };
 
 }

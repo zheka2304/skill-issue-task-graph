@@ -57,15 +57,18 @@ struct CompiledTaskGraph
         static constexpr uint8_t STATE_DONE = 3;
         std::atomic<uint8_t> state = STATE_NONE;
         bool isPendingOnStart = false;
+        bool allowToRunInParallelWithItself = false;
 
         std::atomic<uint64_t> dependencies = 0;
-        std::vector<uint32_t> nextTasks;
+        uint32_t nextTasksStart;
+        uint32_t nextTasksEnd;
 
         uint32_t groupId;
         uint32_t subGroupId;
+        int32_t subgraphDataIdx = -1;
 
         TaskData taskData;
-        bool allowToRunInParallelWithItself;
+
 
         Task() = default;
         Task(Task &&rhs)
@@ -80,6 +83,13 @@ struct CompiledTaskGraph
     Vector<TaskSubGroup> allSubGroups;
     Vector<TaskSubGroupState> allSubGroupsState;
     Vector<Task> allTasks;
+    Vector<uint32_t> nextTaskIds;
+    // - task count
+    // - subgraph entry task
+    // - subgraph exit task
+    // - remaining count
+    // - [task id]
+    Vector<int32_t> subGraphData;
 };
 
 struct ThreadedTaskGraphExecutor
@@ -111,6 +121,10 @@ struct ThreadedTaskGraphExecutor
         PENDING_INC_DEPENDENCY,
         PENDING_ADD_TASK,
         PENDING_ADD_GROUP,
+        SUBGRAPH_ENTER,
+        SUBGRAPH_RESTART,
+        SUBGRAPH_EXIT,
+        SUBGRAPH_SKIP,
         THREAD_WAIT,
         THREAD_EXIT,
         THREAD_START_GROUP,
@@ -132,6 +146,10 @@ struct ThreadedTaskGraphExecutor
         "PENDING_INC_DEPENDENCY",
         "PENDING_ADD_TASK",
         "PENDING_ADD_GROUP",
+        "SUBGRAPH_ENTER",
+        "SUBGRAPH_RESTART",
+        "SUBGRAPH_EXIT",
+        "SUBGRAPH_SKIP",
         "THREAD_WAIT",
         "THREAD_EXIT",
         "THREAD_START_GROUP",
@@ -216,6 +234,7 @@ private:
     void leaveSubgroup(ThreadCtx &ctx, uint32_t group_id, uint32_t subgroup_id);
     bool doSubGroup(ThreadCtx &ctx, uint32_t group_id, uint32_t subgroup_id);
     bool doVarTask(ThreadCtx &ctx, uint32_t subgroup_id, uint32_t task_id, uint32_t var_task_idx);
+    void doSubGraphTask(ThreadCtx &ctx, uint32_t task_id);
     bool afterTaskDone(ThreadCtx &ctx, uint32_t task_id);
 };
 

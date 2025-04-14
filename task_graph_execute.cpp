@@ -28,6 +28,14 @@ void ThreadedTaskGraphExecutor::prepareForExecution(int thread_num)
         deps <<= uint64_t(32u);
         task.dependencies.store(deps, std::memory_order_relaxed);
     }
+    for (int32_t idx = 0; idx < graph.subGraphData.size(); )
+    {
+        int32_t cnt = graph.subGraphData[idx++];
+        idx++;
+        idx++;
+        graph.subGraphData[idx++] = -1; // reset remaining
+        idx += cnt;
+    }
     /*
     for (int i = 0; i < graph.allTasks.size(); i++)
         if (graph.allTasks[i].isPendingOnStart)
@@ -197,6 +205,14 @@ bool ThreadedTaskGraphExecutor::doSubGroup(ThreadCtx & __restrict ctx, uint32_t 
                 continue;
             task.state.store(CompiledTaskGraph::Task::STATE_EXECUTING, std::memory_order_relaxed);
             anyTasks = true;
+
+            // subgraph task
+            if (task.subgraphDataIdx != -1)
+            {
+                doSubGraphTask(ctx, taskId);
+                continue;
+            }
+
             // (optionally) wake other threads
 
             int taskCnt = 1;
@@ -251,6 +267,86 @@ bool ThreadedTaskGraphExecutor::doVarTask(ThreadCtx & __restrict ctx, uint32_t s
     return owned;
 }
 
+void ThreadedTaskGraphExecutor::doSubGraphTask(ThreadCtx& ctx, uint32_t task_id)
+{
+    CompiledTaskGraph & __restrict graph = *graphPtr;
+    CompiledTaskGraph::Task &task = graph.allTasks[task_id];
+    int32_t idx = task.subgraphDataIdx;
+    int32_t cnt = graph.subGraphData[idx++];
+    int32_t subgraphEntryTask = graph.subGraphData[idx++];
+    int32_t subgraphExitTask = graph.subGraphData[idx++];
+    int32_t &remaining = graph.subGraphData[idx++];
+    assert(task_id == subgraphEntryTask || task_id == subgraphExitTask);
+    assert(!task.allowToRunInParallelWithItself);
+
+    const auto resetTaskStateAndDeps = [&] (uint32_t sg_task_id)
+    {
+        CompiledTaskGraph::Task &subGraphTask = graph.allTasks[sg_task_id];
+        assert (subGraphTask.state.load(std::memory_order_relaxed) == CompiledTaskGraph::Task::STATE_DONE);
+        uint64_t deps = subGraphTask.dependencies.load(std::memory_order_relaxed);
+        deps >>= uint64_t(32u);
+        deps <<= uint64_t(32u);
+        subGraphTask.dependencies.store(deps, std::memory_order_relaxed);
+        subGraphTask.state.store(CompiledTaskGraph::Task::STATE_NONE, std::memory_order_relaxed);
+    };
+    const auto resetSubgraphTasks = [&] {
+        for (int i = 0; i < cnt; i++)
+            resetTaskStateAndDeps(graph.subGraphData[idx + i]);
+        resetTaskStateAndDeps(subgraphExitTask);
+    };
+
+    if (task_id == subgraphEntryTask)
+    {
+        OPTICK_EVENT("subgraph_entry");
+        if (remaining < 0)
+        {
+            if (remaining == -2)
+                resetSubgraphTasks();
+            remaining = task.taskData.taskVarFn ? task.taskData.taskVarFn(task.taskData.userData) : 1;
+            if (remaining > 0)
+                ctx.addEvent<Event::SUBGRAPH_ENTER>(1, task_id);
+            else
+                ctx.addEvent<Event::SUBGRAPH_SKIP>(1, task_id);
+            assert(remaining >= 0);
+        }
+        graph.allTasks[task_id].state.store(CompiledTaskGraph::Task::STATE_DONE, std::memory_order_relaxed);
+        if (remaining == 0) // subgraph is not required to run
+        {
+            assert(task.state.load(std::memory_order_relaxed) == CompiledTaskGraph::Task::STATE_NONE);
+            graph.allTasks[subgraphExitTask].state.store(CompiledTaskGraph::Task::STATE_DONE, std::memory_order_relaxed);
+            afterTaskDone(ctx, task_id);
+        }
+        else
+        {
+            remaining--;
+            afterTaskDone(ctx, task_id);
+        }
+    }
+    else
+    {
+        OPTICK_EVENT("subgraph_exit");
+        assert(remaining >= 0);
+        graph.allTasks[task_id].state.store(CompiledTaskGraph::Task::STATE_DONE, std::memory_order_relaxed);
+        if (remaining == 0)
+        {
+            remaining = -2; // signal to reset this graph before next start
+            ctx.addEvent<Event::SUBGRAPH_EXIT>(1, task_id);
+            afterTaskDone(ctx, task_id); // graph is done
+            return;
+        }
+        resetSubgraphTasks();
+
+        // set entry task as pending
+        CompiledTaskGraph::Task &entryTask = graph.allTasks[subgraphEntryTask];
+        entryTask.state.store(CompiledTaskGraph::Task::STATE_PENDING, std::memory_order_relaxed);
+        ctx.addEvent<Event::PENDING_ADD_TASK>(1, task_id, subgraphEntryTask);
+        const uint64_t nextSubgroupIndexInGroup = entryTask.subGroupId - graph.allGroups[entryTask.groupId].subGroupsStart;
+        graph.allGroupsState[entryTask.groupId].pending.fetch_or(uint64_t(1) << nextSubgroupIndexInGroup, std::memory_order_acq_rel);
+        ctx.addEvent<Event::PENDING_ADD_GROUP>(1, entryTask.groupId);
+        ctx.addEvent<Event::SUBGRAPH_RESTART>(1, task_id);
+    }
+}
+
 bool ThreadedTaskGraphExecutor::afterTaskDone(ThreadCtx & __restrict ctx, uint32_t task_id)
 {
     CompiledTaskGraph & __restrict graph = *graphPtr;
@@ -259,8 +355,9 @@ bool ThreadedTaskGraphExecutor::afterTaskDone(ThreadCtx & __restrict ctx, uint32
 
     std::vector<uint64_t> &subGroupMasksToExecuteNext = ctx.subGroupMasksToExecuteNext;
     subGroupMasksToExecuteNext.clear();
-    for (auto nextTaskId : task.nextTasks)
+    for (uint32_t i = task.nextTasksStart; i < task.nextTasksEnd; i++)
     {
+        uint32_t nextTaskId = graph.nextTaskIds[i];
         CompiledTaskGraph::Task &nextTask = graph.allTasks[nextTaskId];
         if (nextTask.dependencies.load(std::memory_order_relaxed) != 0) // has more than 1 dependency
         {
@@ -282,8 +379,8 @@ bool ThreadedTaskGraphExecutor::afterTaskDone(ThreadCtx & __restrict ctx, uint32
         else
         {
             subGroupMasksToExecuteNext.resize(graph.allGroups.size(), 0);
-            uint32_t nextSubgroupIndexInGroup = nextTask.subGroupId - graph.allGroups[nextTask.groupId].subGroupsStart;
-            subGroupMasksToExecuteNext[nextTask.groupId] |= uint64_t(1u) << uint64_t(nextSubgroupIndexInGroup);
+            uint64_t nextSubgroupIndexInGroup = nextTask.subGroupId - graph.allGroups[nextTask.groupId].subGroupsStart;
+            subGroupMasksToExecuteNext[nextTask.groupId] |= uint64_t(1u) << nextSubgroupIndexInGroup;
         }
     }
 
