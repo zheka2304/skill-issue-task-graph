@@ -80,7 +80,8 @@ struct MergeSubgroupsState
     template<typename Allocator>
     explicit MergeSubgroupsState(const Allocator &allocator) :
             groups(allocator), allTasks(allocator), subgroupExclusionGraph(allocator),
-            subgroups(allocator), tasks(allocator), nextTasks(allocator), mergeState(allocator)
+            subgroups(allocator), tasks(allocator), nextTasks(allocator),
+            subgroupsToMerge(allocator), mergeState(allocator)
     {
         mergeState.sgPair = Vector<int32_t>(allocator);
     }

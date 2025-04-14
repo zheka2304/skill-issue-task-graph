@@ -9,7 +9,7 @@
 #include "taskgraph/task_graph_execute.h"
 #include "taskgraph/simple_thread_pool.h"
 
-#define PERF_TEST_MODE 1
+#define PERF_TEST_MODE 0
 
 
 using namespace si::tg;

@@ -90,6 +90,13 @@ struct CompiledTaskGraph
     // - remaining count
     // - [task id]
     Vector<int32_t> subGraphData;
+
+    CompiledTaskGraph() = default;
+    template<typename Allocator>
+    CompiledTaskGraph(const Allocator &allocator) :
+        allGroups(allocator), allGroupsState(allocator), allSubGroups(allocator), allSubGroupsState(allocator),
+        allTasks(allocator), nextTaskIds(allocator), subGraphData(allocator)
+    {}
 };
 
 
