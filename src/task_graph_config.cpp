@@ -1,4 +1,4 @@
-#include "task_graph_config.h"
+#include <taskgraph/task_graph_config.h>
 
 #include <cassert>
 #include <cstdarg>

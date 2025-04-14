@@ -1,7 +1,8 @@
 #pragma once
 
 #include <atomic>
-#include "task_graph.h"
+
+#include <taskgraph/task_graph.h>
 
 
 namespace si::tg

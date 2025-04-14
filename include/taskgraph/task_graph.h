@@ -1,6 +1,6 @@
 #pragma once
 
-#include "task_graph_config.h"
+#include <taskgraph/task_graph_config.h>
 
 
 namespace si::tg::internal

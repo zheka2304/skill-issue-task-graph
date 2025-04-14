@@ -1,4 +1,4 @@
-#include "simple_thread_pool.h"
+#include <taskgraph/simple_thread_pool.h>
 
 #define TP_VERBOSE(...) // si::tg::internal::log_debug(__VA_ARGS__)
 #define TP_SKIP_EXECUTION 0

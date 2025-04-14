@@ -3,10 +3,10 @@ project(ecs_scheduler)
 
 
 set(SRC_TASK_GRAPH
-        taskgraph/task_graph_compile.cpp
-        taskgraph/task_graph_execute.cpp
-        taskgraph/task_graph_config.cpp
-        taskgraph/simple_thread_pool.cpp)
+        src/task_graph_compile.cpp
+        src/task_graph_execute.cpp
+        src/task_graph_config.cpp
+        src/simple_thread_pool.cpp)
 
 set(SRC_LOGGER
         logger/logger.cpp)
@@ -40,5 +40,6 @@ add_executable(ecs_scheduler
         ${SRC_TASK_GRAPH}
         main.cpp)
 
-target_include_directories(ecs_scheduler PUBLIC optick)
+target_include_directories(ecs_scheduler PUBLIC optick include)
+
 target_link_libraries(ecs_scheduler PUBLIC ws2_32 DbgHelp)

@@ -1,9 +1,7 @@
-#include "task_graph.h"
-
 #include <cstring>
-#include <unordered_map>
-#include "task_graph_compile.h"
-#include "task_graph_execute.h"
+
+#include <taskgraph/task_graph_compile.h>
+#include <taskgraph/task_graph_execute.h>
 
 
 namespace si::tg
