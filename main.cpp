@@ -3,9 +3,11 @@
 #include <vector>
 #include <cassert>
 
-#include "logger.h"
-#include "task_graph_execute.h"
 #include "optick.h"
+#include "logger/logger.h"
+#include "taskgraph/task_graph_compile.h"
+#include "taskgraph/task_graph_execute.h"
+#include "taskgraph/simple_thread_pool.h"
 
 
 using sie::logger::debug;

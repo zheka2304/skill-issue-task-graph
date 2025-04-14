@@ -1,13 +1,8 @@
 #pragma once
 
-#include <optional>
 #include <atomic>
-#include <thread>
-#include <condition_variable>
-#include <functional>
-
 #include "task_graph.h"
-#include "logger.h"
+
 
 namespace si::tg
 {
@@ -93,6 +88,7 @@ struct CompiledTaskGraph
     Vector<int32_t> subGraphData;
 };
 
+
 struct ThreadedTaskGraphExecutor
 {
     CompiledTaskGraph *graphPtr;
@@ -163,28 +159,13 @@ struct ThreadedTaskGraphExecutor
     {
         Event event;
         int64_t timestamp;
-        std::array<uint32_t, 1> ids;
+        Array<uint32_t, 4> ids;
         bool operator<(const TimedEvent &rhs) const { return timestamp < rhs.timestamp; }
     };
 
-    std::array<int64_t, uint8_t(Event::NUM)> getEventCountStats() const
-    {
-        std::array<int64_t, uint8_t(Event::NUM)> result = {0};
-        for (const ThreadCtx &ctx : threadCtxArray)
-            for (int i = 0; i < uint8_t(Event::NUM); i++)
-                result[i] += ctx.eventCnt[i];
-        return result;
-    }
+    Array<int64_t, uint8_t(Event::NUM)> getEventCountStats() const;
 
-    std::vector<TimedEvent> getAllTimedEvents() const
-    {
-        std::vector<TimedEvent> all;
-        for (const ThreadCtx &ctx : threadCtxArray)
-            for (const TimedEvent &evt : ctx.timedEvents)
-                all.push_back(evt);
-        std::sort(all.begin(), all.end());
-        return all;
-    }
+    Vector<TimedEvent> getAllTimedEvents() const;
 
 private:
 
@@ -196,58 +177,27 @@ private:
         uint32_t subgroupId = 0;
         bool isSubgroupOwned = false;
 
-        bool isWakeAttemptPending = false;
         uint32_t failedGroups = 0;
         uint32_t failedSubgroups = 0;
         uint64_t executingMask = 0;
 
         ThreadedTaskGraphExecutor *executor;
 
-        std::vector<uint64_t> subGroupMasksToExecuteNext;
+        Vector<uint64_t> subGroupMasksToExecuteNext;
 
-        std::array<int64_t, uint8_t(Event::NUM)> eventCnt = {0};
-        std::vector<TimedEvent> timedEvents;
+#if SI_TG_ENABLE_DEBUG_STAT_EVENTS
+        Array<int64_t, uint8_t(Event::NUM)> eventCnt = {0};
+#endif
+#if SI_TG_ENABLE_DEBUG_TIMED_EVENTS
+        Vector<TimedEvent> timedEvents;
+#endif
 
         char _falseSharingPad[128];
 
-        ~ThreadCtx()
-        {
-            SI_TG_ASSERT(!isSubgroupOwned);
-        }
+        ~ThreadCtx();
 
         template<Event Evt, typename ...Args>
-        void addEvent(int64_t v, Args &&... args)
-        {
-            if (false)
-            if (Evt != Event::SUBGROUP_ENTER_ATTEMPT &&
-                Evt != Event::SUBGROUP_ENTER_CAS &&
-                Evt != Event::PENDING_INC_DEPENDENCY
-                &&
-                Evt != Event::THREAD_WAIT &&
-                Evt != Event::THREAD_NOTHING_PENDING &&
-                Evt != Event::THREAD_START_GROUP &&
-                Evt != Event::THREAD_EXIT
-                )
-            {
-                if (sizeof...(args) == 0)
-                    sie::logger::debug("exec", "[%i] %s", threadId, EVENT_NAMES[int(Evt)], int(args)...);
-                else if (sizeof...(args) == 1)
-                    sie::logger::debug("exec", "[%i] %s %i", threadId, EVENT_NAMES[int(Evt)], int(args)...);
-                else if (sizeof...(args) == 2)
-                    sie::logger::debug("exec", "[%i] %s %i %i", threadId, EVENT_NAMES[int(Evt)], int(args)...);
-                else if (sizeof...(args) == 3)
-                    sie::logger::debug("exec", "[%i] %s %i %i %i", threadId, EVENT_NAMES[int(Evt)], int(args)...);
-                else if (sizeof...(args) == 4)
-                    sie::logger::debug("exec", "[%i] %s %i %i %i %i", threadId, EVENT_NAMES[int(Evt)], int(args)...);
-            }
-#if SI_TG_ENABLE_DEBUG_STAT_EVENTS
-            eventCnt[int(Evt)] += v;
-#endif
-#if SI_TG_ENABLE_DEBUG_TIMED_EVENTS
-            if constexpr (Evt == Event::TASK_EXECUTE_START || Evt == Event::TASK_EXECUTE_END)
-                timedEvents.push_back(TimedEvent{ Evt, executor->curTimedEventIdx.fetch_add(1, std::memory_order_relaxed), args... });
-#endif
-        }
+        void addEvent(int64_t v, Args &&... args);
     };
     Vector<ThreadCtx> threadCtxArray;
     const char _falseSharingPad[128] = {0};
@@ -267,49 +217,6 @@ private:
     bool doVarTask(ThreadCtx &ctx, uint32_t subgroup_id, uint32_t task_id, uint32_t var_task_idx);
     void doSubGraphTask(ThreadCtx &ctx, uint32_t task_id);
     bool afterTaskDone(ThreadCtx &ctx, uint32_t task_id);
-};
-
-
-struct SimpleThreadPool
-{
-    SimpleThreadPool() = default;
-    ~SimpleThreadPool();
-    SimpleThreadPool(const SimpleThreadPool&) = delete;
-    SimpleThreadPool& operator=(const SimpleThreadPool&) = delete;
-
-    void windUpThreads(int thread_num);
-    void shutdownThreads();
-    void execute(CompiledTaskGraph *graph);
-    void waitDone();
-    void wakeAll();
-
-    struct CondVar
-    {
-        std::mutex mutex;
-        std::condition_variable condVar;
-        std::atomic<uint64_t> word = 0;
-
-        void wakeThread(int tid) { wakeMask(uint64_t(1) << uint64_t(tid)); }
-        void waitThread(int thread_id);
-        void wakeMask(uint64_t mask);
-        void waitMask(uint64_t mask);
-        void waitMaskImpl(std::unique_lock<std::mutex> &lock, uint64_t mask);
-    };
-
-    static thread_local int thisThreadId;
-
-private:
-    void doThread(int thread_id);
-    static void exec(SimpleThreadPool* self, int thread_id);
-
-private:
-    ThreadedTaskGraphExecutor executor;
-
-    bool running = false;
-    std::vector<std::thread> threads;
-    CondVar idleEvent;
-    CondVar wakeEvent;
-    CondVar doneEvent;
 };
 
 }

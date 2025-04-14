@@ -1,39 +1,212 @@
 #include "task_graph.h"
 
-#include <cassert>
-#include <sstream>
+#include <cstring>
 #include <unordered_map>
-#include "logger.h"
+#include "task_graph_compile.h"
 #include "task_graph_execute.h"
 
 
 namespace si::tg
 {
 
-using namespace sie;
-using sie::logger::error;
+// BaseGraphEdgesRef
+
+bool BaseGraphEdgesRef::operator==(const BaseGraphEdgesRef& rhs) const
+{
+    if (size() != rhs.size())
+        return false;
+    bool r = true;
+    for (int i = 0; i < size(); i++)
+        r &= data[i] == rhs.data[i];
+    return r;
+}
+
+uint32_t BaseGraphEdgesRef::count() const
+{
+    uint32_t r = 0;
+    for (uint64_t w : *this)
+        r += internal::count_set_bits(w);
+    return r;
+}
+
+size_t BaseGraphEdgesRef::hash() const
+{
+    size_t seed = size();
+    for (uint64_t x : *this)
+    {
+        x = ((x >> 16) ^ x) * 0x45d9f3b;
+        x = ((x >> 16) ^ x) * 0x45d9f3b;
+        x = (x >> 16) ^ x;
+        seed ^= x + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+    }
+    return seed;
+}
+
+// BaseGraph
+
+void BaseGraph::resize(int newSize)
+{
+    SI_TG_ASSERT(newSize >= 0);
+    if (vertexCnt == newSize)
+        return;
+    const uint32_t oldWordCnt = uint32_t((vertexCnt + 63u) / 64u);
+    const uint32_t newWordCnt = uint32_t((uint32_t(newSize) + 63u) / 64u);
+    vertexFlags.resize(newSize * vertexFlagCount, 0);
+    if (oldWordCnt == newWordCnt)
+    {
+        connections.resize(newWordCnt * newSize, 0);
+    }
+    else if (newWordCnt > oldWordCnt)
+    {
+        connections.resize(newWordCnt * newSize, 0);
+        for (int v = vertexCnt - 1; v >= 0; v--)
+        {
+            uint64_t* from = connections.data() + v * oldWordCnt;
+            uint64_t* to = connections.data() + v * newWordCnt;
+            memmove(to, from, sizeof(uint64_t) * oldWordCnt);
+            memset(to + oldWordCnt, 0, sizeof(uint64_t) * (newWordCnt - oldWordCnt));
+        }
+    }
+    else
+    {
+        for (int v = 0; v < newSize; v++)
+        {
+            uint64_t* from = connections.data() + uint32_t(v) * oldWordCnt;
+            uint64_t* to = connections.data() + uint32_t(v) * newWordCnt;
+            memmove(to, from, sizeof(uint64_t) * newWordCnt);
+        }
+        connections.resize(newWordCnt * newSize, 0);
+    }
+    wordCnt = newWordCnt;
+    vertexCnt = newSize;
+}
+
+void BaseGraph::reserve(int newSize)
+{
+    const uint32_t newWordCnt = uint32_t((uint32_t(newSize) + 63u) / 64u);
+    vertexFlags.reserve(newSize * vertexFlagCount);
+    connections.reserve(newSize * newWordCnt);
+}
+
+BaseGraph& BaseGraph::operator=(BaseGraph&& rhs)
+{
+    connections = std::move(rhs.connections);
+    vertexCnt = std::exchange(rhs.vertexCnt, 0);
+    wordCnt = std::exchange(rhs.wordCnt, 0);
+    vertexFlags = std::move(rhs.vertexFlags);
+    vertexFlagCount = std::exchange(rhs.vertexFlagCount, 0);
+    return *this;
+}
+
+void BaseGraph::copyFrom(const BaseGraph& rhs)
+{
+    connections = rhs.connections;
+    vertexCnt = rhs.vertexCnt;
+    wordCnt = rhs.wordCnt;
+    vertexFlags = rhs.vertexFlags;
+    vertexFlagCount = rhs.vertexFlagCount;
+}
+
+// BaseGraph - edges
+
+void BaseGraph::setConnected(uint32_t v1, uint32_t v2, bool set)
+{
+    SI_TG_ASSERT(v1 < vertexCnt && v2 < vertexCnt);
+    uint64_t &word = connections[uint32_t(v1) * wordCnt + uint32_t(v2) / 64u];
+    uint64_t bit = uint64_t(1) << uint64_t(v2 % 64u);
+    if (set)
+        word |= bit;
+    else
+        word &= ~bit;
+}
+
+bool BaseGraph::isConnected(uint32_t v1, uint32_t v2) const
+{
+    SI_TG_ASSERT(v1 < vertexCnt && v2 < vertexCnt);
+    uint64_t word = connections[v1 * wordCnt + v2 / 64u];
+    uint64_t bit = uint64_t(1) << uint64_t(v2 % 64u);
+    return (word & bit) != 0;
+}
+
+BaseGraphEdgesRef BaseGraph::getEdges(uint32_t v1)
+{
+    SI_TG_ASSERT(v1 < vertexCnt);
+    return BaseGraphEdgesRef(connections.data() + v1 * wordCnt, wordCnt);
+}
+
+// BaseGraph - flags
+
+
+bool BaseGraph::getFlag(uint32_t idx, uint32_t flag) const
+{
+    SI_TG_ASSERT(idx < vertexCnt);
+    SI_TG_ASSERT(flag < vertexFlagCount);
+    idx = idx * vertexFlagCount + flag;
+    return bool(vertexFlags[idx / 64u] & (uint64_t(1) << uint64_t(idx % 64u)));
+}
+
+void BaseGraph::setFlag(uint32_t idx, uint32_t flag, bool set)
+{
+    SI_TG_ASSERT(idx < vertexCnt);
+    SI_TG_ASSERT(flag < vertexFlagCount);
+    idx = idx * vertexFlagCount + flag;
+    uint64_t &word = vertexFlags[idx / 64u];
+    uint64_t bit = uint64_t(1) << uint64_t(idx % 64u);
+    if (set)
+        word |= bit;
+    else
+        word &= ~bit;
+}
+
+void BaseGraph::setAllFlags(uint32_t flag, bool set)
+{
+    SI_TG_ASSERT(flag < vertexFlagCount);
+    for (uint32_t idx = 0; idx < vertexCnt; idx++)
+        setFlag(idx, flag, set);
+}
+
+void BaseGraph::setFlagCount(uint32_t cnt)
+{
+    if (vertexFlagCount != cnt)
+    {
+        vertexFlags.clear();
+        vertexFlags.resize(vertexCnt * cnt, 0);
+        vertexFlagCount = cnt;
+    }
+}
+
+}
+
+
+namespace si::tg
+{
 
 // TaskGraph
-TaskId TaskGraph::addTask(const TaskData &data)
+
+TaskId TaskGraph::addTask(const TaskData& data)
 {
     TaskId id(taskData.size());
-    taskData.push_back(data);
-    taskSubGraph.push_back(nullptr);
+    TaskDataExt task;
+    task.task = data;
+    task.subGraph = nullptr;
+    taskData.push_back(task);
     taskOrderGraph.resize(taskData.size());
     return id;
 }
 
-TaskId TaskGraph::addSubGraphTask(const TaskData &data, const TaskGraph *graph)
+TaskId TaskGraph::addSubGraphTask(const TaskData& data, const TaskGraph* graph)
 {
     TaskId id(taskData.size());
     SI_TG_ASSERT(data.taskFn == nullptr);
-    taskData.push_back(data);
-    taskSubGraph.push_back(graph);
+    TaskDataExt task;
+    task.task = data;
+    task.subGraph = graph;
+    taskData.push_back(task);
     taskOrderGraph.resize(taskData.size());
     return id;
 }
 
-void TaskGraph::setTaskData(TaskId task, const TaskData &data)
+void TaskGraph::setTaskData(TaskId task, const TaskData& data)
 {
     SI_TG_ASSERT(task.value() < taskData.size());
 }
@@ -58,7 +231,7 @@ void TaskGraph::setResourceUsage(TaskId task, uint64_t resource_id, ResourceUsag
         return;
     }
     bool found = false;
-    for (auto it = begin; it != end; )
+    for (auto it = begin; it != end;)
     {
         if (it->second.task == task.value())
         {
@@ -100,12 +273,32 @@ void TaskGraph::clear()
     taskResourceUsage.clear();
 }
 
+}
+
+// PrebuiltTaskGraph
+
+namespace si::tg
+{
+
+template<typename F, typename BaseGraphT>
+void base_graph_dfs(BaseGraphT& graph, uint32_t v, uint32_t visited_flag, F&& f)
+{
+    if (graph.getFlag(v, visited_flag))
+        return;
+    graph.setFlag(v, visited_flag, true);
+    f(v, [v, &graph, visited_flag, &f] {
+        graph.iterEdges(v, [&](uint32_t vv) {
+            base_graph_dfs(graph, vv, visited_flag, f);
+        });
+    });
+}
+
 static int task_graph_resolve_size(const TaskGraph &graph)
 {
     int count = 0;
     for (int i = 0; i < graph.taskData.size(); i++)
-        if (graph.taskSubGraph[i] != nullptr)
-            count += 2 + task_graph_resolve_size(*graph.taskSubGraph[i]); // entry + exit tasks
+        if (graph.taskData[i].subGraph != nullptr)
+            count += 2 + task_graph_resolve_size(*graph.taskData[i].subGraph); // entry + exit tasks
         else
             count++;
     return count;
@@ -115,8 +308,8 @@ static void resolve_resources_and_dependencies(PrebuiltTaskGraph &prebuilt, cons
 {
     // copy tasks
     uint32_t tasksOffset = prebuilt.taskData.size();
-    for (const TaskData &task : graph.taskData)
-        prebuilt.taskData.push_back(task); // add subgraph entry tasks as-is with everything else, keep indices
+    for (const TaskGraph::TaskDataExt &task : graph.taskData)
+        prebuilt.taskData.push_back(task.task); // add subgraph entry tasks as-is with everything else, keep indices
     SI_TG_ASSERT(prebuilt.taskGraph.size() >= prebuilt.taskData.size());
     SI_TG_ASSERT(prebuilt.exclusionGraph.size() >= prebuilt.taskData.size());
 
@@ -143,13 +336,13 @@ static void resolve_resources_and_dependencies(PrebuiltTaskGraph &prebuilt, cons
 
     for (int i = 0; i < graph.taskData.size(); i++)
     {
-        if (graph.taskSubGraph[i] != nullptr)
+        if (graph.taskData[i].subGraph != nullptr)
         {
             PrebuiltTaskGraph::SubGraphData subGraphData;
             subGraphData.entryTaskId = tasksOffset + i;
             subGraphData.exitTaskId = prebuilt.taskData.size();
             prebuilt.taskData.emplace_back();
-            const TaskGraph& subGraph = *graph.taskSubGraph[i];
+            const TaskGraph& subGraph = *graph.taskData[i].subGraph;
             SI_TG_ASSERT(prebuilt.taskGraph.size() >= prebuilt.taskData.size());
             SI_TG_ASSERT(prebuilt.exclusionGraph.size() >= prebuilt.taskData.size());
 
@@ -183,7 +376,7 @@ static void resolve_resources_and_dependencies(PrebuiltTaskGraph &prebuilt, cons
 
 bool prebuild_task_graph(PrebuiltTaskGraph &prebuilt, const TaskGraph &graph)
 {
-    logger::debug("compile", "building graph");
+    internal::log_debug("building graph");
     const int totalTaskCount = task_graph_resolve_size(graph);
     prebuilt.taskGraph.resize(totalTaskCount);
     prebuilt.exclusionGraph.resize(totalTaskCount);
@@ -206,7 +399,7 @@ bool prebuild_task_graph(PrebuiltTaskGraph &prebuilt, const TaskGraph &graph)
                 prebuilt.taskGraph.setFlag(vv, 1, false);
             if (std::find(stack.begin(), stack.end(), vv) != stack.end())
             {
-                error("graph", "node cycle detected! %i", v);
+                internal::log_error("node cycle detected! %i", v);
                 isValid = false;
             }
             stack.push_back(vv);
@@ -233,11 +426,7 @@ bool prebuild_task_graph(PrebuiltTaskGraph &prebuilt, const TaskGraph &graph)
             if (depth != 0)
                 prebuilt.exclusionGraph.setConnectedBoth(baseId, curId, false);
             if (depth > 1)
-            {
-                if (prebuilt.taskGraph.isConnected(baseId, curId))
-                    logger::debug("prebuilt", "disconnect %i %i", baseId, curId);
                 prebuilt.taskGraph.setConnected(baseId, curId, false);
-            }
             prebuilt.taskGraph.iterEdges(curId, [&] (uint32_t nextId) {
                 if (prebuilt.taskGraph.getFlag(nextId, 0))
                     return;
@@ -307,12 +496,10 @@ bool compile_task_graph(CompiledTaskGraph &compiled, PrebuiltTaskGraph &prebuilt
 
         auto mergeSubgroups = [&] (uint64_t dst, uint64_t src)
         {
-            // logger::debug("compile", "  merge %i <- %i", dst, src);
             SI_TG_ASSERT(src != dst);
             SI_TG_ASSERT(!group.subgroups[src].tasks.empty());
             SI_TG_ASSERT(!group.subgroups[dst].tasks.empty());
             group.subgroupCnt--;
-            // logger::debug("", "merged %i <- %i", int(dst), int(src));
             for (uint32_t t : group.subgroups[src].tasks)
                 group.subgroups[dst].tasks.push_back(t);
             group.subgroups[src].tasks.clear();
@@ -320,7 +507,6 @@ bool compile_task_graph(CompiledTaskGraph &compiled, PrebuiltTaskGraph &prebuilt
             group.subgroupExclusionGraph.iterEdges(src, [&] (uint32_t v) {
                 if (v == src)
                     return;
-                // int cnt = group.subgroupExclusionGraph.countEdges(v);
                 group.subgroupExclusionGraph.setConnectedBoth(src, v, false);
                 group.subgroupExclusionGraph.setConnectedBoth(dst, v, true);
             });
@@ -361,17 +547,14 @@ bool compile_task_graph(CompiledTaskGraph &compiled, PrebuiltTaskGraph &prebuilt
             state.totalValue += valueChange;
             if (state.sgPair[sg1] >= 0)
             {
-                //logger::debug("compile", "    unpair %i %i", sg1, sgPair[sg1]);
                 state.sgPair[state.sgPair[sg1]] = -1;
                 state.pairCnt--;
             }
             if (state.sgPair[sg2] >= 0)
             {
-                //logger::debug("compile", "    unpair %i %i", bestIdx, sgPair[bestIdx]);
                 state.sgPair[state.sgPair[sg2]] = -1;
                 state.pairCnt--;
             }
-            //logger::debug("compile", "    pair %i %i", sg1, bestIdx);
             state.sgPair[sg2] = sg1;
             state.sgPair[sg1] = sg2;
             state.pairCnt++;
@@ -443,7 +626,6 @@ bool compile_task_graph(CompiledTaskGraph &compiled, PrebuiltTaskGraph &prebuilt
             srand(6000);
             for (int n = 0; n < 5; n++)
             {
-                logger::debug("compile", "  epoch %i: value %i", n, baseState.totalValue);
                 MergeState bestState;
                 resetMergeState(bestState);
                 for (int k = 0; k < 5; k++)
@@ -459,7 +641,6 @@ bool compile_task_graph(CompiledTaskGraph &compiled, PrebuiltTaskGraph &prebuilt
                         makePair(state, sg1, sg2);
                     }
                     runSinglePass(state);
-                    logger::debug("compile", "    attempt %i: value %i", k, state.totalValue);
                     if (state.totalValue > bestState.totalValue && state.totalValue > baseState.totalValue)
                         bestState = std::move(state);
                 }
@@ -477,7 +658,7 @@ bool compile_task_graph(CompiledTaskGraph &compiled, PrebuiltTaskGraph &prebuilt
                     mergeSubgroups(sg1, baseState.sgPair[sg1]);
                 group.subgroupExclusionGraph.iterEdges(sg1, [&] (uint32_t sg2) { SI_TG_ASSERT(!group.subgroups[sg2].tasks.empty()); });
             }
-            logger::debug("compile", "  merged %i/%i subgroups, value: %i, remaining %i", baseState.pairCnt * 2, cntBeforeMerge, baseState.totalValue, group.subgroupCnt);
+            internal::log_debug("  merged %i/%i subgroups, value: %i, remaining %i", baseState.pairCnt * 2, cntBeforeMerge, baseState.totalValue, group.subgroupCnt);
         }
     }
 
@@ -628,43 +809,43 @@ bool compile_task_graph(CompiledTaskGraph &compiled, PrebuiltTaskGraph &prebuilt
     }
 
     // debug
-#if 0
-    logger::debug("graph", "COMPILED GRAPH");
+#if 1
+    internal::log_debug("COMPILED GRAPH\n");
     for (int groupId = 0; groupId < compiled.allGroups.size(); groupId++)
     {
         CompiledTaskGraph::TaskGroup &group = compiled.allGroups[groupId];
-        logger::debug("graph", "group #%i (%i)", groupId, int(group.subGroupsEnd - group.subGroupsStart));
+        internal::log_debug("group #%i (%i)\n", groupId, int(group.subGroupsEnd - group.subGroupsStart));
         for (int subgroupId = group.subGroupsStart; subgroupId < group.subGroupsEnd; subgroupId++)
         {
             CompiledTaskGraph::TaskSubGroup &subgroup = compiled.allSubGroups[subgroupId];
-            logger::debug_inline("graph", "  subgroup %02i (%3i) [", subgroupId - group.subGroupsStart, subgroup.tasksEnd - subgroup.tasksStart);
+            internal::log_debug("  subgroup %02i (%3i) [", subgroupId - group.subGroupsStart, subgroup.tasksEnd - subgroup.tasksStart);
             for (int i = 0; i < 64; i++)
-                logger::debug_inline("graph", "%i", (subgroup.excludedMask >> uint64_t(i)) & uint64_t(1));
-            logger::debug_inline("graph", "]");
+                internal::log_debug("%i", (subgroup.excludedMask >> uint64_t(i)) & uint64_t(1));
+            internal::log_debug("]");
             for (uint32_t taskId = subgroup.tasksStart; taskId < subgroup.tasksEnd; taskId++)
             {
                 CompiledTaskGraph::Task &task = compiled.allTasks[taskId];
-                logger::debug_inline("graph", "%i{", int(taskId));
+                internal::log_debug("%i{", int(taskId));
                 if (task.subgraphDataIdx != -1)
-                    logger::debug_inline("graph", "sg:%i|%i ", compiled.subGraphData[task.subgraphDataIdx + 1], compiled.subGraphData[task.subgraphDataIdx + 2]);
+                    internal::log_debug("sg:%i|%i ", compiled.subGraphData[task.subgraphDataIdx + 1], compiled.subGraphData[task.subgraphDataIdx + 2]);
                 int deps = int(task.dependencies >> 32u);
                 if (deps == 0 && !task.isPendingOnStart)
                     deps = 1;
-                logger::debug_inline("graph", "d:%i", deps);
+                internal::log_debug("d:%i", deps);
                 if (task.nextTasksStart != task.nextTasksEnd)
                 {
-                    logger::debug_inline("graph", " next:");
+                    internal::log_debug(" next:");
                     for (int i = task.nextTasksStart; i < task.nextTasksEnd; i++)
-                        logger::debug_inline("graph", " %i", compiled.nextTaskIds[i]);
+                        internal::log_debug(" %i", compiled.nextTaskIds[i]);
                 }
-                logger::debug_inline("graph", "} ", int(taskId), deps);
+                internal::log_debug("} ", int(taskId), deps);
             }
-            logger::debug_inline("graph", "\n");
+            internal::log_debug("\n");
         }
     }
 
     if (!compiled.subGraphData.empty())
-        logger::debug("graph", "SUB-GRAPHS");
+        internal::log_debug("SUB-GRAPHS\n");
     for (int idx = 0; idx < compiled.subGraphData.size(); )
     {
         const int32_t id = idx;
@@ -672,15 +853,13 @@ bool compile_task_graph(CompiledTaskGraph &compiled, PrebuiltTaskGraph &prebuilt
         int32_t subgraphEntryTask = compiled.subGraphData[idx++];
         int32_t subgraphExitTask = compiled.subGraphData[idx++];
         idx++;
-        logger::debug_inline("graph", "  subgraph #%i (%i) [%i|%i]: ", id, cnt, subgraphEntryTask, subgraphExitTask);
+        internal::log_debug("  subgraph #%i (%i) [%i|%i]: ", id, cnt, subgraphEntryTask, subgraphExitTask);
         for (uint32_t i = 0; i < cnt; i++)
-            logger::debug_inline("graph", " %i", compiled.subGraphData[idx++]);
-        logger::debug_inline("graph", "\n");
+            internal::log_debug(" %i", compiled.subGraphData[idx++]);
+        internal::log_debug("\n");
     }
 #endif
     return true;
 }
-
-
 
 }

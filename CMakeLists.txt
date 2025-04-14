@@ -4,10 +4,13 @@ project(ecs_scheduler)
 set(CMAKE_CXX_STANDARD 20)
 
 add_executable(ecs_scheduler
+        taskgraph/task_graph_compile.cpp
+        taskgraph/task_graph_execute.cpp
+        taskgraph/task_graph_config.cpp
+        taskgraph/simple_thread_pool.cpp
+
         main.cpp
-        logger.cpp
-        task_graph_compile.cpp
-        task_graph_execute.cpp
+        logger/logger.cpp
 
         optick/optick_capi.cpp
         optick/optick_core.cpp
