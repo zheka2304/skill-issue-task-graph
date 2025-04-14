@@ -741,6 +741,7 @@ bool compile_task_graph(PrebuiltTaskGraph &prebuilt, CompiledTaskGraph *compiled
 
     // merge small groups
     SI_TG_VERBOSE(1, "  merging small groups (%i)\n", int(c_state.groups.size()));
+    const int32_t MIN_GROUP_SIZE = 32;
     while (true)
     {
         int prevCandidateIdx = -1;
@@ -767,7 +768,7 @@ bool compile_task_graph(PrebuiltTaskGraph &prebuilt, CompiledTaskGraph *compiled
                 src.subgroups.clear();
                 anyMerged = true;
             }
-            else if ((prevCandidateIdx < 0 || c_state.groups[i].subgroupCnt < c_state.groups[prevCandidateIdx].subgroupCnt) && c_state.groups[i].subgroupCnt < 32)
+            else if ((prevCandidateIdx < 0 || c_state.groups[i].subgroupCnt < c_state.groups[prevCandidateIdx].subgroupCnt) && c_state.groups[i].subgroupCnt < MIN_GROUP_SIZE)
                 prevCandidateIdx = i;
         }
         c_state.groups.erase(std::remove_if(c_state.groups.begin(), c_state.groups.end(), [&] (auto &g) { return g.subgroups.empty(); }), c_state.groups.end());

@@ -15,7 +15,7 @@ struct SimpleThreadPool
     ~SimpleThreadPool();
     SimpleThreadPool(const SimpleThreadPool&) = delete;
     SimpleThreadPool& operator=(const SimpleThreadPool&) = delete;
-    explicit SimpleThreadPool(int thread_num) : SimpleThreadPool() { windUpThreads(thread_num); }
+    explicit SimpleThreadPool(int thread_num);
 
     void windUpThreads(int thread_num);
     void shutdownThreads();

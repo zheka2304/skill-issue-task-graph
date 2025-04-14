@@ -27,8 +27,8 @@ struct BitIter
         return true;
     }
 
-    uint64_t idx() const
-    { return idx_ < 0 ? 0 : idx_; }
+    uint64_t idx() const { return idx_ < 0 ? 0 : idx_; }
+    void setWord(uint64_t w) { word = w; }
 
 private:
     uint64_t word;
@@ -86,6 +86,17 @@ void ThreadedTaskGraphExecutor::ThreadCtx::addEvent(int64_t v, Args&& ... args)
 ThreadedTaskGraphExecutor::ThreadCtx::~ThreadCtx()
 {
     SI_TG_ASSERT(!isSubgroupOwned);
+}
+
+uint32_t ThreadedTaskGraphExecutor::ThreadCtx::nextRnd()
+{
+    uint32_t x = rndSeed;
+    if (x == 0)
+        x++;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    return rndSeed = x;
 }
 
 void ThreadedTaskGraphExecutor::getAllTimedEvents([[maybe_unused]] Vector<TimedEvent> &all) const
@@ -189,7 +200,7 @@ ThreadedTaskGraphExecutor::ThreadResult ThreadedTaskGraphExecutor::doThread(int 
         if (ctx.numFailedSubgroups >= maxFailedSubGroups)
         {
             ctx.numFailedGroups++;
-            ctx.groupId++;
+            ctx.groupId = ctx.nextRnd();
             ctx.groupId %= graph.allGroups.size();
             continue;
         }
@@ -215,18 +226,19 @@ bool ThreadedTaskGraphExecutor::doGroupUntilSubgroupEnter(ThreadCtx & SI_TG_REST
     // SI_TG_PROFILE_INTERNAL("do_group_next")
     CompiledTaskGraph & SI_TG_RESTRICT graph = *graphPtr;
     const uint32_t subGroupsStartIdx = graph.allGroups[ctx.groupId].subGroupsStart;
-    uint64_t pending = graph.allGroupsState[ctx.groupId].pending.load(std::memory_order_relaxed);
+    CompiledTaskGraph::TaskGroupState & SI_TG_RESTRICT groupState = graph.allGroupsState[ctx.groupId];
+    uint64_t pending = groupState.pending.load(std::memory_order_relaxed);
     if (pending == 0)
     {
         ctx.addEvent<Event::THREAD_NOTHING_PENDING>(1, ctx.groupId);
         return false; // move to next group
     }
-    ctx.executingMask = graph.allGroupsState[ctx.groupId].executing.load(std::memory_order_relaxed);
+    ctx.executingMask = groupState.executing.load(std::memory_order_relaxed);
     internal::BitIter bitIter(pending);
     while (bitIter.step())
     {
         ctx.subgroupId = subGroupsStartIdx + bitIter.idx();
-        ctx.isSubgroupOwned = tryEnterSubgroup(ctx, ctx.groupId, ctx.subgroupId, ctx.executingMask, false);
+        ctx.isSubgroupOwned = tryEnterSubgroup(ctx, ctx.groupId, ctx.subgroupId, ctx.executingMask, true);
         if (!ctx.isSubgroupOwned && allow_var_tasks)
         {
             // only try acquiring var task, if this group is executing

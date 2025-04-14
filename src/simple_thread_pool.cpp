@@ -52,6 +52,11 @@ void SimpleThreadPool::waitDone()
     TP_VERBOSE("all done - wait end\n");
 }
 
+SimpleThreadPool::SimpleThreadPool(int thread_num)
+{
+    windUpThreads(thread_num);
+}
+
 SimpleThreadPool::~SimpleThreadPool() { shutdownThreads(); }
 
 thread_local int SimpleThreadPool::thisThreadId = -1;
@@ -80,9 +85,9 @@ void SimpleThreadPool::doThread(int thread_id)
             // debug("exec", "[%i] idle ended", thread_id);
         }
 
-        executor.setWakeCallback(thread_id, useWait ? WakeThreadsCallback(wakeThreadsFn) : WakeThreadsCallback());
         while (running)
         {
+            executor.setWakeCallback(thread_id, useWait ? WakeThreadsCallback(wakeThreadsFn) : WakeThreadsCallback());
 #if !TP_SKIP_EXECUTION
             bool end = false;
             constexpr int MAX_ATTEMPTS = 32;

@@ -192,6 +192,8 @@ private:
         uint32_t numFailedSubgroups = 0;
         uint64_t executingMask = 0;
 
+        uint32_t rndSeed = 0;
+
         WakeThreadsCallback wakeCb;
         ThreadedTaskGraphExecutor *executor;
 
@@ -206,6 +208,7 @@ private:
         [[maybe_unused]] char _falseSharingPad[128];
 
         ~ThreadCtx();
+        uint32_t nextRnd();
 
         template<Event Evt, typename ...Args>
         void addEvent(int64_t v, Args &&... args);
