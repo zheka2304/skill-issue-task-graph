@@ -17,8 +17,8 @@ void init_random_task_graph(TaskGraph &graph)
     graph.allNodes.resize(1000);
     for (int i = 0; i < graph.allNodes.size() - 1; i++)
     {
-        for (int n = 0; n < 10; n++)
-            graph.setNext(i, i + 1 + rand() % (graph.allNodes.size() - 1));
+        for (int n = 0; n < 5; n++)
+            graph.setNext(i, i + 1 + rand() % (graph.allNodes.size() - i - 1));
         for (int n = 0; n < 40; n++)
             graph.addResource(i, rand() % 200, rand() % 5 == 0);
     }
@@ -78,6 +78,28 @@ int main()
 {
     sie::logger::init_default_log_handler("log.txt");
 
+    TaskGraph graph;
+    if (false)
+        init_random_task_graph(graph);
+    else
+    {
+        auto t0 = graph.addTask();
+        auto t1 = graph.addTask();
+        auto t2 = graph.addTask();
+        auto t3 = graph.addTask();
+        auto t4 = graph.addTask();
+        auto t5= graph.addTask();
+        graph.setNext(t0, t1);
+        graph.setNext(t1, t2);
+        graph.setNext(t1, t3);
+        graph.setNext(t3, t4);
+    }
+
+    graph.validateAndNormalize();
+    graph.buildFibers();
+    graph.dumpToLog();
+
+    /*
     CompiledTaskGraph graph;
     graph.queueNodes.resize(21);
     graph.rebuildTree();
@@ -95,7 +117,7 @@ int main()
         tree.wakeAll();
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         tree.shutdown();
-    }
+    }*/
 
     sie::logger::shutdown_default_log_handler();
     return 0;

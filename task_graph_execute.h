@@ -19,6 +19,9 @@ struct CompiledTaskGraph
         static constexpr uint32_t PENDING_BIT = 0x20000000u;
         std::atomic<uint32_t> state = 0;
 
+        TaskExecutionState() = default;
+        TaskExecutionState(TaskExecutionState &&rhs) : state(rhs.state.load(std::memory_order_relaxed)) {}
+
         bool setPendingAndPreCheck();
         bool tryExec();
         void endExec();
@@ -83,6 +86,7 @@ struct CompiledTaskGraph
         {}
 
         void initBeforeStart();
+        void setRequirementsCount(int count) { requirements.store(uint64_t(count) << 32u, std::memory_order_relaxed); }
     };
 
     SignalTreeNodeRoot treeRootNode;
