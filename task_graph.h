@@ -86,6 +86,8 @@ struct BaseGraph
 {
     static constexpr uint32_t INVALID_ID = ~0u;
 
+    int getVertexCount() const { return vertexCnt; }
+
     void resize(uint32_t newSize)
     {
         if (vertexCnt == newSize)
@@ -150,10 +152,23 @@ struct BaseGraph
         return std::span(connections.data() + v1 * wordCnt, wordCnt);
     }
 
+    std::span<const uint64_t> getEdges(uint32_t v1) const
+    {
+        return std::span(connections.data() + v1 * wordCnt, wordCnt);
+    }
+
     template<typename F>
     void iterEdges(uint32_t v1, F &&f)
     {
         iter_set_bits_span(getEdges(v1), f);
+    }
+
+    int countEdges(uint32_t v1) const
+    {
+        int cnt = 0;
+        for (uint64_t word : getEdges(v1))
+            cnt += count_set_bits(word);
+        return cnt;
     }
 
     void setFlagCount(uint32_t cnt)
@@ -224,14 +239,53 @@ void base_graph_dfs(BaseGraph &graph, uint32_t v, uint32_t visited_flag, F &&f)
     });
 }
 
+struct GraphBfsState
+{
+    std::vector<std::pair<uint32_t, int>> nodes;
+    int visitedCnt = 0;
+
+    size_t size() const { return visitedCnt; }
+    auto begin() const { return nodes.begin(); }
+    auto end() const { return nodes.begin() + visitedCnt; }
+    void clear()
+    {
+        nodes.clear();
+        visitedCnt = 0;
+    }
+    void initOne(uint32_t v)
+    {
+        clear();
+        nodes.push_back({v, 0});
+    }
+};
+
+/*
+template<typename F>
+void base_graph_bfs(BaseGraph &graph, GraphBfsState &state, uint32_t visited_flag, F &&f)
+{
+    while (state.visitedCnt < state.nodes.size())
+    {
+        const auto [v, dist] = state.nodes[state.visitedCnt++];
+        if (graph.getFlag(v, visited_flag))
+            return;
+        f(v, dist);
+        graph.iterEdges(v, [&] (uint32_t vv) {
+            if (graph.getFlag(vv, visited_flag))
+                return;
+            graph.setFlag(vv, visited_flag, true);
+            state.nodes.push_back({vv, dist + 1});
+        });
+    }
+}
+*/
 
 namespace sie
 {
 
 struct TaskGraph;
 struct CompiledTaskGraph;
-using TaskFnPtr = void (*)(int);
-using VarTaskFnPtr = int (*)(void);
+using TaskFnPtr = void (*)(void*, int);
+using VarTaskFnPtr = int (*)(void*);
 
 struct TaskGraph
 {
@@ -247,13 +301,10 @@ struct TaskGraph
     public:
         // stable
         TaskFnPtr fn;
+        VarTaskFnPtr varFn;
+        void* userData;
         std::vector<uint32_t> nextTasks;
         std::vector<TaskGraph::ResourceRef> resources;
-
-        // volatile
-        bool visited = false;
-        uint32_t fiberId = INVALID_ID;
-        std::vector<uint32_t> prevTasks;
     };
 
     // Tasks, executed in sequence. Dependencies are needed only to start
@@ -265,16 +316,11 @@ struct TaskGraph
 
 public:
     uint32_t addTask();
+    void setTaskData(uint32_t task, TaskFnPtr fn, VarTaskFnPtr var_fn, void* data);
     void setNext(uint32_t task, uint32_t next);
     void addResource(uint32_t task, uint64_t resId, bool write);
 
-    template<typename U, typename F>
-    void traverseNodeSequence(std::vector<U> &stack, std::vector<uint32_t> &visited, uint32_t node, F &&f);
-
-    bool validateAndNormalize();
-    void buildFibers();
-    void dumpToLog();
-    bool compileTo(CompiledTaskGraph &graph);
+    bool validateAndNormalize(CompiledTaskGraph &compiled);
 
 public:
     std::vector<TaskNode> allNodes;

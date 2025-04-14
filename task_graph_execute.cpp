@@ -9,87 +9,118 @@ namespace sie
 
 using logger::debug;
 
-void CompiledTaskGraph::doThread()
+void ThreadedTaskGraphExecutor::prepareForExecution(int thread_num)
 {
+    threadCtxArray.resize(0);
+    threadCtxArray.resize(thread_num);
+    for (int i = 0; i < threadCtxArray.size(); i++)
+    {
+        threadCtxArray[i].executor = this;
+        threadCtxArray[i].threadId = i;
+    }
+    CompiledTaskGraph & __restrict graph = *graphPtr;
+    for (CompiledTaskGraph::Task &task : graph.allTasks)
+    {
+        task.state.store(task.isPendingOnStart ? CompiledTaskGraph::Task::STATE_PENDING : CompiledTaskGraph::Task::STATE_NONE, std::memory_order_relaxed);
+        uint64_t deps = task.dependencies.load(std::memory_order_relaxed);
+        deps >>= 32u;
+        deps <<= 32u;
+        task.dependencies.store(deps, std::memory_order_relaxed);
+    }
+    for (int i = 0; i < graph.allTasks.size(); i++)
+        if (graph.allTasks[i].isPendingOnStart)
+            debug("exec", "task pending on start %i (subgroup=%i)", i, graph.allTasks[i].subGroupId);
+    for (CompiledTaskGraph::TaskGroup &group : graph.allGroups)
+        group.pending.store(group.initialPending, std::memory_order_relaxed);
+    curTimedEventIdx.store(0, std::memory_order_relaxed);
+}
+
+ThreadedTaskGraphExecutor::ThreadResult ThreadedTaskGraphExecutor::doThread(int thread_id)
+{
+    CompiledTaskGraph & __restrict graph = *graphPtr;
     const uint32_t maxFailedGroups = 8;
     const uint32_t maxFailedSubGroups = 32;
 
-    uint32_t groupId = 0;
-    uint32_t failedGroups = 0;
-
-    while (failedGroups < maxFailedGroups)
+    ThreadCtx & __restrict ctx = threadCtxArray[thread_id];
+    ctx.failedGroups = 0;
+    while (ctx.failedGroups < maxFailedGroups)
     {
-        uint32_t failedSubgroups = 0;
-        while (failedSubgroups < maxFailedSubGroups)
+        // ctx.addEvent<Event::THREAD_START_GROUP>(1, ctx.groupId);
+        ctx.failedSubgroups = 0;
+        while (ctx.failedSubgroups < maxFailedSubGroups)
         {
-            uint64_t pending = allGroups[groupId].pending.load(std::memory_order_relaxed);
+            uint64_t pending = graph.allGroups[ctx.groupId].pending.load(std::memory_order_relaxed);
             if (pending == 0)
             {
+                // ctx.addEvent<Event::THREAD_NOTHING_PENDING>(1, ctx.groupId);
                 // end this group - nothing is pending
-                failedSubgroups = maxFailedSubGroups;
+                ctx.failedSubgroups = maxFailedSubGroups;
                 break;
             }
             iter_set_bits(pending, [&] (uint32_t bit_idx) {
-                uint32_t subgroupId = allGroups[groupId].subGroupsStart + bit_idx;
-                bool owned = tryEnterSubgroup(groupId, subgroupId, false);
+                uint32_t subgroupId = graph.allGroups[ctx.groupId].subGroupsStart + bit_idx;
+                bool owned = tryEnterSubgroup(ctx, ctx.groupId, subgroupId, false);
                 if (!owned)
                 {
-                    const auto [varTaskCnt, varTaskId] = tryAcquireVarTask(groupId, subgroupId);
-                    if (varTaskCnt > 0 && doVarTask(subgroupId, varTaskId, varTaskCnt - 1))
+                    const auto [varTaskCnt, varTaskId] = tryAcquireVarTask(ctx, ctx.groupId, subgroupId);
+                    if (varTaskCnt > 0 && doVarTask(ctx, subgroupId, varTaskId, varTaskCnt - 1))
                         owned = true;
                 }
                 if (!owned)
                 {
-                    failedSubgroups++;
+                    ctx.failedSubgroups++;
                     return;
                 }
-                failedSubgroups = 0;
-                owned = doSubGroup(groupId, subgroupId);
+                ctx.failedSubgroups = 0;
+                owned = doSubGroup(ctx, ctx.groupId, subgroupId);
                 if (owned)
-                    leaveSubgroup(groupId, subgroupId);
+                    leaveSubgroup(ctx, ctx.groupId, subgroupId);
             });
         }
-        if (failedSubgroups == maxFailedSubGroups)
+        if (ctx.failedSubgroups == maxFailedSubGroups)
         {
-            failedGroups++;
-            groupId++;
-            groupId %= allGroups.size();
+            ctx.failedGroups++;
+            ctx.groupId++;
+            ctx.groupId %= graph.allGroups.size();
             continue;
         }
     }
-}
 
-bool CompiledTaskGraph::checkAllTasksDone()
-{
-    bool done = true;
-    for (const Task &task : allTasks)
-        done &= task.state.load(std::memory_order_relaxed) == Task::STATE_DONE;
-    return done;
-}
-
-bool CompiledTaskGraph::checkAllTasksExecutingOrDone()
-{
-    bool done = true;
-    for (const Task &task : allTasks)
+    uint8_t minState = CompiledTaskGraph::Task::STATE_DONE;
+    for (const CompiledTaskGraph::Task &task : graph.allTasks)
+        minState = std::min<uint8_t>(minState, task.state.load(std::memory_order_relaxed));
+    if (minState == CompiledTaskGraph::Task::STATE_DONE)
     {
-        uint8_t state = task.state.load(std::memory_order_relaxed);
-        done &= state == Task::STATE_EXECUTING || state == Task::STATE_DONE;
+        ctx.addEvent<Event::THREAD_EXIT>(1);
+        return ThreadResult::ALL_DONE;
     }
-    return done;
+    if (minState == CompiledTaskGraph::Task::STATE_EXECUTING)
+    {
+        ctx.addEvent<Event::THREAD_EXIT>(1);
+        return ThreadResult::EXIT;
+    }
+    // ctx.addEvent<Event::THREAD_WAIT>(1);
+    return ThreadResult::WAIT;
 }
 
-bool CompiledTaskGraph::tryEnterSubgroup(uint32_t group_id, uint32_t subgroup_id, bool loop)
+bool ThreadedTaskGraphExecutor::tryEnterSubgroup(ThreadCtx & __restrict ctx, uint32_t group_id, uint32_t subgroup_id, bool loop)
 {
-    const uint64_t mask = allSubGroups[subgroup_id].excludedMask;
-    TaskGroup &group = allGroups[group_id];
+    ctx.addEvent<Event::SUBGROUP_ENTER_ATTEMPT>(1, subgroup_id);
+    CompiledTaskGraph & __restrict graph = *graphPtr;
+    const uint64_t mask = graph.allSubGroups[subgroup_id].excludedMask;
+    CompiledTaskGraph::TaskGroup &group = graph.allGroups[group_id];
     const uint64_t indexInGroup = subgroup_id - group.subGroupsStart;
     const uint64_t subgroupBit = uint64_t(1) << indexInGroup;
     uint64_t executing = group.executing.load(std::memory_order_relaxed);
     while ((executing & mask) == 0)
     {
         uint64_t newExecuting = executing | subgroupBit;
+        ctx.addEvent<Event::SUBGROUP_ENTER_CAS>(1, subgroup_id);
         if (group.executing.compare_exchange_strong(executing, newExecuting, std::memory_order_acq_rel))
+        {
+            ctx.addEvent<Event::SUBGROUP_ENTER>(1, subgroup_id);
             return true;
+        }
         if (!loop)
             break;
     }
@@ -98,65 +129,76 @@ bool CompiledTaskGraph::tryEnterSubgroup(uint32_t group_id, uint32_t subgroup_id
     return false;
 }
 
-std::pair<uint32_t, uint32_t> CompiledTaskGraph::tryAcquireVarTask(uint32_t group_id, uint32_t subgroup_id)
+std::pair<uint32_t, uint32_t> ThreadedTaskGraphExecutor::tryAcquireVarTask(ThreadCtx & __restrict ctx, uint32_t group_id, uint32_t subgroup_id)
 {
-    TaskSubGroup& subgroup = allSubGroups[subgroup_id];
+    CompiledTaskGraph & __restrict graph = *graphPtr;
+    CompiledTaskGraph::TaskSubGroup& subgroup = graph.allSubGroups[subgroup_id];
     uint64_t curVarTask = subgroup.curVarTask.load(std::memory_order_relaxed);
     while (curVarTask != 0)
     {
+        ctx.addEvent<Event::TASK_VAR_ACQUIRE_CAS>(1, subgroup_id);
         const uint32_t varTaskCnt = uint32_t(curVarTask);
         const uint32_t varTaskIdx = uint32_t(curVarTask >> 32u);
         const uint32_t newVarTaskCnt = varTaskCnt - 1;
         const uint32_t newVarTaskIdx = newVarTaskCnt ? varTaskIdx : 0;
         const uint64_t newVarTask = uint64_t(newVarTaskCnt) | (uint64_t(newVarTaskIdx) << 32u);
         if (subgroup.curVarTask.compare_exchange_strong(curVarTask, newVarTask, std::memory_order_acq_rel))
+        {
+            ctx.addEvent<Event::TASK_VAR_ACQUIRE>(1, varTaskIdx);
             return {varTaskCnt, varTaskIdx};
+        }
     }
     return {0, ~0u};
 }
 
-void CompiledTaskGraph::leaveSubgroup(uint32_t group_id, uint32_t subgroup_id)
+void ThreadedTaskGraphExecutor::leaveSubgroup(ThreadCtx & __restrict ctx, uint32_t group_id, uint32_t subgroup_id)
 {
-    TaskGroup &group = allGroups[group_id];
+    ctx.addEvent<Event::SUBGROUP_LEAVE>(1, subgroup_id);
+    CompiledTaskGraph & __restrict graph = *graphPtr;
+    CompiledTaskGraph::TaskGroup &group = graph.allGroups[group_id];
     const uint64_t indexInGroup = subgroup_id - group.subGroupsStart;
     const uint64_t subgroupBit = uint64_t(1) << indexInGroup;
-    allGroups[group_id].executing.fetch_and(~subgroupBit, std::memory_order_acq_rel);
+    group.executing.fetch_and(~subgroupBit, std::memory_order_acq_rel);
 }
 
-bool CompiledTaskGraph::doSubGroup(uint32_t group_id, uint32_t subgroup_id)
+bool ThreadedTaskGraphExecutor::doSubGroup(ThreadCtx & __restrict ctx, uint32_t group_id, uint32_t subgroup_id)
 {
-    TaskGroup &group = allGroups[group_id];
+    CompiledTaskGraph & __restrict graph = *graphPtr;
+    CompiledTaskGraph::TaskGroup &group = graph.allGroups[group_id];
     const uint64_t indexInGroup = subgroup_id - group.subGroupsStart;
     const uint64_t subgroupBit = uint64_t(1) << indexInGroup;
 
     bool anyTasks = true;
-    TaskSubGroup& subgroup = allSubGroups[subgroup_id];
+    CompiledTaskGraph::TaskSubGroup& subgroup = graph.allSubGroups[subgroup_id];
     while (anyTasks)
     {
         group.pending.fetch_and(~subgroupBit, std::memory_order_relaxed);
         anyTasks = false;
         for (uint32_t taskId = subgroup.tasksStart; taskId < subgroup.tasksEnd; taskId++)
         {
-            Task &task = allTasks[taskId];
-            if (task.state.load(std::memory_order_relaxed) != Task::STATE_PENDING)
+            CompiledTaskGraph::Task &task = graph.allTasks[taskId];
+            if (task.state.load(std::memory_order_relaxed) != CompiledTaskGraph::Task::STATE_PENDING)
                 continue;
-            task.state.store(Task::STATE_EXECUTING, std::memory_order_relaxed);
+            task.state.store(CompiledTaskGraph::Task::STATE_EXECUTING, std::memory_order_relaxed);
             anyTasks = true;
             // (optionally) wake other threads
 
             int taskCnt = 1;
+            void* userData = task.taskUserData;
             if (task.varTask)
-                taskCnt = task.varTask();
+                taskCnt = task.varTask(userData);
             if (taskCnt < 2 || !task.allowToRunInParallelWithItself)
             {
+                ctx.addEvent<Event::TASK_EXECUTE_START>(taskCnt, taskId);
                 // not variadic or can't parallel with self
                 if (taskCnt > 1)
                 {
                     for (int i = taskCnt - 1; i >= 0; i--)
-                        task.task(i);
+                        task.task(userData, i);
                 }
-                else if (taskCnt == 1) task.task(0);
-                afterTaskDone(taskId);
+                else if (taskCnt == 1) task.task(userData, 0);
+                ctx.addEvent<Event::TASK_EXECUTE_END>(taskCnt, taskId);
+                afterTaskDone(ctx, taskId);
             }
             else
             {
@@ -167,6 +209,7 @@ bool CompiledTaskGraph::doSubGroup(uint32_t group_id, uint32_t subgroup_id)
                 subgroup.curVarTask.compare_exchange_strong(expected, (uint64_t(taskId) << 32u) | uint64_t(taskCnt), std::memory_order_acq_rel);
                 assert(expected == 0);
                 group.pending.fetch_or(subgroupBit, std::memory_order_relaxed);
+                ctx.addEvent<Event::TASK_VAR_WIND_UP>(1, taskId);
                 return false; // not owned
             }
         }
@@ -174,37 +217,46 @@ bool CompiledTaskGraph::doSubGroup(uint32_t group_id, uint32_t subgroup_id)
     return true; // still owned
 }
 
-bool CompiledTaskGraph::doVarTask(uint32_t subgroup_id, uint32_t task_id, uint32_t var_task_idx)
+bool ThreadedTaskGraphExecutor::doVarTask(ThreadCtx & __restrict ctx, uint32_t subgroup_id, uint32_t task_id, uint32_t var_task_idx)
 {
-    Task &task = allTasks[task_id];
-    task.task(int(var_task_idx));
+    CompiledTaskGraph & __restrict graph = *graphPtr;
+    CompiledTaskGraph::Task &task = graph.allTasks[task_id];
+    ctx.addEvent<Event::TASK_VAR_EXECUTE>(1, task_id, var_task_idx);
+    ctx.addEvent<Event::TASK_EXECUTE_START>(1, task_id);
+    task.task(task.taskUserData, int(var_task_idx));
+    ctx.addEvent<Event::TASK_EXECUTE_END>(1, task_id);
 
-    const int64_t remaining = allSubGroups[subgroup_id].remainingVarTasks.fetch_sub(1, std::memory_order_acq_rel);
+    const int64_t remaining = graph.allSubGroups[subgroup_id].remainingVarTasks.fetch_sub(1, std::memory_order_acq_rel);
     assert(remaining > 0);
     bool owned = remaining == 1;
     if (owned)
-        afterTaskDone(task_id);
+        afterTaskDone(ctx, task_id);
     return owned;
 }
 
-bool CompiledTaskGraph::afterTaskDone(uint32_t task_id)
+bool ThreadedTaskGraphExecutor::afterTaskDone(ThreadCtx & __restrict ctx, uint32_t task_id)
 {
-    Task &task = allTasks[task_id];
+    CompiledTaskGraph & __restrict graph = *graphPtr;
+    CompiledTaskGraph::Task &task = graph.allTasks[task_id];
     bool anyTasksFromThisSubGroupArePending = false;
 
-    // TODO: fixme
-    std::vector<uint64_t> subGroupMasksToExecuteNext;
+    std::vector<uint64_t> &subGroupMasksToExecuteNext = ctx.subGroupMasksToExecuteNext;
+    subGroupMasksToExecuteNext.clear();
     for (auto nextTaskId : task.nextTasks)
     {
-        Task &nextTask = allTasks[nextTaskId];
+        CompiledTaskGraph::Task &nextTask = graph.allTasks[nextTaskId];
         if (nextTask.dependencies.load(std::memory_order_relaxed) != 0) // has more than 1 dependency
         {
             uint64_t deps = nextTask.dependencies.fetch_add(1, std::memory_order_acq_rel) + 1;
-            if (uint32_t(deps) != (deps >> uint64_t(32)))
+            uint32_t cur = uint32_t(deps);
+            uint32_t target = uint32_t(deps >> uint64_t(32));
+            ctx.addEvent<Event::PENDING_INC_DEPENDENCY>(1, nextTaskId, task_id, cur, target);
+            if (cur != target)
                 continue; // not all dependencies met yet
         }
-        assert(nextTask.state.load(std::memory_order_relaxed) == Task::STATE_NONE);
-        nextTask.state.store(Task::STATE_PENDING, std::memory_order_relaxed);
+        assert(nextTask.state.load(std::memory_order_relaxed) == CompiledTaskGraph::Task::STATE_NONE);
+        nextTask.state.store(CompiledTaskGraph::Task::STATE_PENDING, std::memory_order_relaxed);
+        ctx.addEvent<Event::PENDING_ADD_TASK>(1, task_id, nextTaskId);
 
         if (nextTask.subGroupId == task.subGroupId)
         {
@@ -212,8 +264,8 @@ bool CompiledTaskGraph::afterTaskDone(uint32_t task_id)
         }
         else
         {
-            subGroupMasksToExecuteNext.resize(allGroups.size(), 0);
-            uint32_t nextSubgroupIndexInGroup = nextTask.subGroupId - allGroups[nextTask.groupId].subGroupsStart;
+            subGroupMasksToExecuteNext.resize(graph.allGroups.size(), 0);
+            uint32_t nextSubgroupIndexInGroup = nextTask.subGroupId - graph.allGroups[nextTask.groupId].subGroupsStart;
             subGroupMasksToExecuteNext[nextTask.groupId] |= uint64_t(1u) << uint64_t(nextSubgroupIndexInGroup);
         }
     }
@@ -221,17 +273,20 @@ bool CompiledTaskGraph::afterTaskDone(uint32_t task_id)
     for (uint32_t groupId = 0; groupId < subGroupMasksToExecuteNext.size(); groupId++)
     {
         if (subGroupMasksToExecuteNext[groupId] != 0)
-            allGroups[groupId].pending.fetch_or(subGroupMasksToExecuteNext[groupId], std::memory_order_relaxed);
+        {
+            ctx.addEvent<Event::PENDING_ADD_GROUP>(1, groupId);
+            graph.allGroups[groupId].pending.fetch_or(subGroupMasksToExecuteNext[groupId], std::memory_order_relaxed);
+        }
     }
 
-    task.state.store(Task::STATE_DONE, std::memory_order_relaxed);
+    task.state.store(CompiledTaskGraph::Task::STATE_DONE, std::memory_order_relaxed);
     return anyTasksFromThisSubGroupArePending;
 }
 
 
 // TaskGraphExecutor
 
-void TaskGraphExecutor::windUp(int count)
+void SimpleThreadPool::windUp(int count)
 {
     shutdown();
     running = true;
@@ -240,39 +295,42 @@ void TaskGraphExecutor::windUp(int count)
         threads.emplace_back(exec, this, i);
 }
 
-void TaskGraphExecutor::wakeAll()
+void SimpleThreadPool::wakeAll()
 {
     condVar.notify_all();
 }
 
-void TaskGraphExecutor::shutdown()
+void SimpleThreadPool::waitAll()
 {
-    running = false;
     wakeAll();
     for (std::thread& t: threads)
         t.join();
     threads.clear();
 }
 
-TaskGraphExecutor::~TaskGraphExecutor()
+void SimpleThreadPool::shutdown()
+{
+    running = false;
+    waitAll();
+}
+
+SimpleThreadPool::~SimpleThreadPool()
 { shutdown(); }
 
-void TaskGraphExecutor::exec(TaskGraphExecutor* self, int thread_id)
+void SimpleThreadPool::exec(SimpleThreadPool* self, int thread_id)
 {
     sie::logger::debug("worker", "startup %i", thread_id);
-    //workerThreadId = thread_id;
     std::vector<TaskFnPtr> taskQueue;
     while (self->running)
     {
-        self->graph->doThread();
-        if (self->graph->checkAllTasksExecutingOrDone())
+        const ThreadedTaskGraphExecutor::ThreadResult result = self->executor->doThread(thread_id);
+        if (result != ThreadedTaskGraphExecutor::ThreadResult::WAIT)
             break;
         // todo: yield
 
         // std::unique_lock lock(self->condVarMutex);
         // self->condVar.wait(lock, [] { return true; });
     }
-    //workerThreadId = -1;
     sie::logger::debug("worker", "shutdown %i", thread_id);
 }
 

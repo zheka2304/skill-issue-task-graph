@@ -14,64 +14,40 @@ using namespace sie;
 void init_random_task_graph(TaskGraph &graph)
 {
     srand(1234);
-    graph.allNodes.resize(1000);
-    for (int i = 0; i < graph.allNodes.size() - 1; i++)
+    graph.allNodes.resize(100);
+    for (int i = 0; i < graph.allNodes.size(); i++)
     {
+        graph.setTaskData(i, +[] (void* data, int idx)
+        {
+            debug("exec", "    test task %i (%i)", (int) (intptr_t) data, idx);
+        }, nullptr, (void*) i);
+        if (i >= graph.allNodes.size() - 1)
+            continue;
         for (int n = 0; n < 5; n++)
             graph.setNext(i, i + 1 + rand() % (graph.allNodes.size() - i - 1));
-        for (int n = 0; n < 20; n++)
-            graph.addResource(i, rand() % 200, rand() % 5 == 0);
+        for (int n = 0; n < 5; n++)
+            graph.addResource(i, rand() % 100, rand() % 5 == 0);
     }
 }
 
-constexpr uint32_t INVALID_ID = ~0u;
-
-void sanitize_task_graph(TaskGraph &graph)
+void execute_task_graph(CompiledTaskGraph &graph, int thread_num = 1)
 {
-    for (auto &node : graph.allNodes)
-        node.visited = false;
-    while (true)
-    {
-        uint32_t taskId = 0;
-        for (; taskId < graph.allNodes.size() && graph.allNodes[taskId].visited; taskId++) {}
-        if (taskId == graph.allNodes.size())
-            break;
+    ThreadedTaskGraphExecutor executor;
+    executor.graphPtr = &graph;
+    executor.prepareForExecution(thread_num);
+    SimpleThreadPool pool;
+    pool.executor = &executor;
+    pool.windUp(thread_num);
+    pool.waitAll();
 
-    }
+    debug("validate", "stats:");
+    auto stats = executor.getEventCountStats();
+    for (int i = 0; i < int(ThreadedTaskGraphExecutor::Event::NUM); i++)
+        debug("validate", "  %s %lli", ThreadedTaskGraphExecutor::EVENT_NAMES[i], stats[i]);
+    debug("validate", "timed events:");
+    for (const auto &evt : executor.getAllTimedEvents())
+        debug("validate", "  %s %i", ThreadedTaskGraphExecutor::EVENT_NAMES[int(evt.event)], evt.ids[0]);
 }
-
-CompiledTaskGraph compile_task_graph(const TaskGraph &raw)
-{
-    CompiledTaskGraph compiled;
-
-    // build queues
-    /*
-    std::vector<uint32_t> assignedQueue;
-    assignedQueue.resize(raw.allNodes.size(), INVALID_ID);
-    while (true)
-    {
-        uint32_t taskId = INVALID_ID;
-        auto [queueId, taskId] = entries.back();
-        entries.pop_back();
-        while (taskId != INVALID_ID)
-        {
-            compiled.queueNodes[queueId].taskQueue.push_back(taskId);
-            auto &nextTasks = raw.allNodes[taskId].nextTasks;
-            taskId = INVALID_ID;
-            for (uint32_t nextTaskId : nextTasks)
-                if (!visited[nextTaskId])
-                {
-                    if ()
-                    taskId = nextTaskId;
-                }
-        }
-    }
-     */
-
-    return compiled;
-}
-
-
 
 
 int main()
@@ -96,7 +72,9 @@ int main()
         graph.setNext(t3, t4);
     }
 
-    assert(graph.validateAndNormalize());
+    CompiledTaskGraph compiledGraph;
+    assert(graph.validateAndNormalize(compiledGraph));
+    execute_task_graph(compiledGraph);
 
     /*
     CompiledTaskGraph graph;

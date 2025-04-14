@@ -34,6 +34,13 @@ uint32_t TaskGraph::addTask()
     return id;
 }
 
+void TaskGraph::setTaskData(uint32_t task, sie::TaskFnPtr fn, sie::VarTaskFnPtr var_fn, void* data)
+{
+    allNodes[task].fn = fn;
+    allNodes[task].varFn = var_fn;
+    allNodes[task].userData = data;
+}
+
 void TaskGraph::setNext(uint32_t task, uint32_t next)
 {
     allNodes[task].addNext(next);
@@ -44,8 +51,9 @@ void TaskGraph::addResource(uint32_t task, uint64_t resId, bool write)
     allNodes[task].resources.push_back(ResourceRef{resId, uint64_t(write)});
 }
 
-bool TaskGraph::validateAndNormalize()
+bool TaskGraph::validateAndNormalize(CompiledTaskGraph &compiled)
 {
+    logger::debug("graph-build", "building graph");
     // directed graph
     BaseGraph taskGraph;
     taskGraph.resize(allNodes.size());
@@ -62,7 +70,7 @@ bool TaskGraph::validateAndNormalize()
     exclusionGraph.setFlagCount(8);
     for (uint32_t i1 = 0; i1 < allNodes.size(); i1++)
     {
-        for (uint32_t i2 = i1 + 1; i2 < allNodes.size(); i2++)
+        for (uint32_t i2 = i1; i2 < allNodes.size(); i2++)
         {
             TaskNode& n1 = allNodes[i1];
             TaskNode& n2 = allNodes[i2];
@@ -82,10 +90,12 @@ bool TaskGraph::validateAndNormalize()
     bool isValid = true;
     std::vector<uint32_t> stack;
     taskGraph.setAllFlags(0, false);
+    taskGraph.setAllFlags(1, true);
     for (uint32_t v = 0; v < allNodes.size(); v++)
     {
         base_graph_dfs(taskGraph, v, 0, [&] (uint32_t vv, auto dfs_next) {
-            // logger::debug_inline("graph", " %i", vv);
+            if (v != vv)
+                taskGraph.setFlag(vv, 1, false);
             if (std::find(stack.begin(), stack.end(), vv) != stack.end())
             {
                 error("graph", "node cycle detected! %i", v);
@@ -100,10 +110,11 @@ bool TaskGraph::validateAndNormalize()
     if (!isValid)
         return false;
 
+    logger::debug("graph-build", "normalizing graph");
     // normalize order
-    taskGraph.setAllFlags(0, false);
     for (uint32_t v = 0; v < allNodes.size(); v++)
     {
+        taskGraph.setAllFlags(0, false);
         base_graph_dfs(taskGraph, v, 0, [&] (uint32_t vv, auto dfs_next) {
             if (stack.size() > 1)
                 taskGraph.setConnected(v, vv, false);
@@ -115,6 +126,7 @@ bool TaskGraph::validateAndNormalize()
     }
 
     // build groups
+    logger::debug("graph-build", "building groups & subgroups");
     struct SubgroupData
     {
         uint64_t mask;
@@ -126,6 +138,13 @@ bool TaskGraph::validateAndNormalize()
         int subgroupCnt;
         BaseGraph subgroupExclusionGraph;
         std::vector<SubgroupData> subgroups;
+        std::vector<std::pair<int, int>> subgroupsLockingCost;
+
+        auto &lockingCost(uint32_t sg1, uint32_t sg2)
+        {
+            if (sg1 > sg2) std::swap(sg1, sg2);
+            return subgroupsLockingCost[sg1 * subgroups.size() + sg2];
+        }
     };
     std::vector<GroupData> groups;
     {
@@ -160,98 +179,145 @@ bool TaskGraph::validateAndNormalize()
     // merge subgroups
     for (GroupData &group : groups)
     {
+        logger::debug("graph-build", "merging subgroups");
+        group.subgroupCnt = group.subgroups.size();
+
+        auto calcLockingConst = [&] (uint32_t sg1, uint32_t sg2) -> std::pair<int, int>
+        {
+            std::span<uint64_t> edges1 = group.subgroupExclusionGraph.getEdges(sg1);
+            std::span<uint64_t> edges2 = group.subgroupExclusionGraph.getEdges(sg2);
+            assert(edges1.size() == edges2.size());
+            int lockedTaskCnt1 = 0;
+            int lockedTaskCnt2 = 0;
+            int lockedTaskCntU = 0;
+            if constexpr (true)
+            {
+                iter_set_bits_span_var([&] (uint32_t v, bool e1, bool e2){
+                    if (e1)
+                        lockedTaskCnt1 += group.subgroups[v].tasks.size();
+                    if (e2)
+                        lockedTaskCnt2 += group.subgroups[v].tasks.size();
+                    lockedTaskCntU += group.subgroups[v].tasks.size();
+                }, edges1, edges2);
+            }
+            else
+            {
+                for (int i = 0; i < edges1.size(); i++)
+                {
+                    lockedTaskCnt1 += count_set_bits(edges1[i]);
+                    lockedTaskCnt2 += count_set_bits(edges2[i]);
+                    lockedTaskCntU += count_set_bits(edges1[i] | edges2[i]);
+                }
+            }
+            int lockingCost1 = lockedTaskCnt1 * group.subgroups[sg1].tasks.size();
+            int lockingCost2 = lockedTaskCnt2 * group.subgroups[sg2].tasks.size();
+            int lockingCostU = lockedTaskCntU * (group.subgroups[sg1].tasks.size() + group.subgroups[sg2].tasks.size());
+            return {lockingCost1 + lockingCost2, lockingCostU};
+        };
+
+        logger::debug("graph-build", "  initial cost calc");
+        group.subgroupsLockingCost.resize(group.subgroups.size() * group.subgroups.size());
+        for (uint32_t i1 = 0; i1 < group.subgroups.size(); i1++)
+            for (uint32_t i2 = i1 + 1; i2 < group.subgroups.size(); i2++)
+                group.lockingCost(i1, i2) = calcLockingConst(i1, i2);
         auto mergeSubgroups = [&] (uint64_t dst, uint64_t src)
         {
+            assert(src != dst);
+            assert(!group.subgroups[src].tasks.empty());
+            assert(!group.subgroups[dst].tasks.empty());
+            group.subgroupCnt--;
+            // logger::debug("", "merged %i <- %i", int(dst), int(src));
             for (uint32_t t : group.subgroups[src].tasks)
                 group.subgroups[dst].tasks.push_back(t);
             group.subgroups[src].tasks.clear();
+            group.subgroupExclusionGraph.setConnectedBoth(src, dst, false);
             group.subgroupExclusionGraph.iterEdges(src, [&] (uint32_t v) {
+                // int cnt = group.subgroupExclusionGraph.countEdges(v);
                 group.subgroupExclusionGraph.setConnectedBoth(src, v, false);
                 group.subgroupExclusionGraph.setConnectedBoth(dst, v, true);
             });
+            group.subgroupExclusionGraph.iterEdges(dst, [&] (uint32_t v) {
+                // logger::debug("", "  updated cost %i", v);
+                group.lockingCost(dst, v) = calcLockingConst(dst, v);
+                group.subgroupExclusionGraph.iterEdges(v, [&] (uint32_t vv) {
+                    group.lockingCost(v, vv) = calcLockingConst(v, vv);
+                });
+            });
         };
-        bool force = true;
-        int minAllowedCost = 0;
+
+        bool force = false;
+        int32_t mergeThreshold = 0;
         while (true)
         {
+            if (false)
+            {
+                logger::debug("", "iteration");
+                for (uint32_t i1 = 0; i1 < group.subgroups.size(); i1++)
+                    for (uint32_t i2 = i1 + 1; i2 < group.subgroups.size(); i2++)
+                        if (group.subgroupExclusionGraph.isConnected(i1, i2) && !group.subgroups[i1].tasks.empty() && !group.subgroups[i2].tasks.empty())
+                            if (group.lockingCost(i1, i2) != calcLockingConst(i1, i2))
+                            {
+                                auto c1 = group.lockingCost(i1, i2);
+                                auto c2 = calcLockingConst(i1, i2);
+                                logger::debug("", "assert failed %i-%i (%i,%i/%i,%i)", i1, i2, c1.first, c1.second, c2.first, c2.second);
+                                logger::flush_default_log();
+                                assert(0);
+                            }
+            }
+
             bool anyMergedTrivially = false;
-            int32_t minParallelCost = INT32_MAX;
-            std::pair<uint32_t, uint32_t> maxPair = {0, 0};
-            int subgroupCnt = 0;
+            int32_t minMergeCost = INT_MAX;
+            std::pair<int32_t, int32_t> minMergePair = {-1, -1};
             for (uint32_t i1 = 0; i1 < group.subgroups.size(); i1++)
             {
                 if (group.subgroups[i1].tasks.empty())
+                {
+                    group.subgroupExclusionGraph.iterEdges(i1, [&] (uint32_t) { assert(0); });
                     continue;
-                subgroupCnt++;
+                }
                 for (uint32_t i2 = i1 + 1; i2 < group.subgroups.size(); i2++)
                 {
+                    if (group.subgroupCnt <= 64 && !anyMergedTrivially)
+                        break;
                     if (group.subgroups[i2].tasks.empty())
                         continue;
-                    if (!force && !group.subgroupExclusionGraph.isConnected(i1,i2)) // skip not connected (this includes empty)
+                    if (!group.subgroupExclusionGraph.isConnected(i1,i2)) // skip not connected
                         continue;
-
-                    std::span<uint64_t> edges1 = group.subgroupExclusionGraph.getEdges(i1);
-                    std::span<uint64_t> edges2 = group.subgroupExclusionGraph.getEdges(i2);
-                    int lockedTaskCnt1 = 0;
-                    int lockedTaskCnt2 = 0;
-                    int lockedTaskCntU = 0;
-                    int lockingConstChange;
-                    if constexpr (false)
+                    auto [lockingCostSum, lockingCostUni] = group.lockingCost(i1, i2);
+                    int lockingCostChange = lockingCostUni - lockingCostSum;
+                    assert(lockingCostChange >= 0);
+                    if (lockingCostChange < minMergeCost)
                     {
-                        iter_set_bits_span_var([&] (uint32_t v, bool e1, bool e2){
-                            if (e1)
-                                lockedTaskCnt1 += group.subgroups[v].tasks.size();
-                            if (e2)
-                                lockedTaskCnt2 += group.subgroups[v].tasks.size();
-                            lockedTaskCntU += group.subgroups[v].tasks.size();
-                        }, edges1, edges2);
+                        if (lockingCostChange > mergeThreshold)
+                            minMergePair = {i1, i2};
+                        minMergeCost = lockingCostChange;
                     }
-                    else
+                    if (lockingCostChange <= mergeThreshold)
                     {
-                        for (int i = 0; i < edges1.size(); i++)
-                        {
-                            lockedTaskCnt1 += count_set_bits(edges1[i]);
-                            lockedTaskCnt2 += count_set_bits(edges2[i]);
-                            lockedTaskCntU += count_set_bits(edges1[i] | edges2[i]);
-                        }
-                    }
-                    int lockingCost1 = lockedTaskCnt1 * group.subgroups[i1].tasks.size();
-                    int lockingCost2 = lockedTaskCnt2 * group.subgroups[i2].tasks.size();
-                    int lockingCostU = lockedTaskCntU * (group.subgroups[i1].tasks.size() + group.subgroups[i2].tasks.size());
-                    lockingConstChange = lockingCostU - (lockingCost1 + lockingCost2);
-                    assert(lockingConstChange >= 0);
-                    if (lockingConstChange <= minAllowedCost)
-                    {
-                        if (lockingConstChange == 0)
-                            logger::debug("graph-build", "merged trivially %i <- %i", i1, i2);
-                        else
-                            logger::debug("graph-build", "merged by threshold %i <- %i cost=%i", i1, i2, lockingConstChange);
-
                         mergeSubgroups(i1, i2);
-                        anyMergedTrivially = true;
+                        if (i1 == minMergePair.first || i1 == minMergePair.second || i2 == minMergePair.first || i2 == minMergePair.second)
+                            minMergePair = {-1, -1};
+                        if (lockingCostChange == 0)
+                        {
+                            anyMergedTrivially = true;
+                            mergeThreshold = 0;
+                        }
                         continue;
-                    }
-                    if (lockingConstChange < minParallelCost)
-                    {
-                        maxPair = {i1, i2};
-                        minParallelCost = lockingConstChange;
                     }
                 }
             }
 
-            group.subgroupCnt = subgroupCnt;
+            logger::debug("graph-build", "  remaining %i", group.subgroupCnt);
             if (anyMergedTrivially)
                 continue;
-            if (subgroupCnt <= 64)
+            if (group.subgroupCnt <= 64)
                 break;
-            minAllowedCost = minParallelCost;
-            if (minParallelCost < INT32_MAX)
+            if (minMergePair.first >= 0)
             {
-                logger::debug("graph-build", "merged by min cost %i <- %i cost=%i", maxPair.first, maxPair.second, int(minParallelCost));
-                mergeSubgroups(maxPair.first, maxPair.second);
+                mergeThreshold = minMergeCost;
+                // logger::debug("graph-build", "merged by min cost %i <- %i cost=%i", maxPair.first, maxPair.second, int(minParallelCost));
+                mergeSubgroups(minMergePair.first, minMergePair.second);
             }
-            else
-                force = true;
         }
     }
 
@@ -271,6 +337,7 @@ bool TaskGraph::validateAndNormalize()
                 continue;
             subgroup.mask = uint64_t(1) << uint64_t(subgroup.subgroupIdx);
             group.subgroupExclusionGraph.iterEdges(i, [&] (uint32_t v) {
+                assert(!group.subgroups[v].tasks.empty());
                 uint64_t idx = group.subgroups[v].subgroupIdx;
                 subgroup.mask |= uint64_t(1) << idx;
             });
@@ -281,201 +348,110 @@ bool TaskGraph::validateAndNormalize()
             assert(i == group.subgroups[i].subgroupIdx);
     }
 
+    // write to compiled
+    struct TaskData
+    {
+        uint32_t remapTaskId = ~uint32_t(0);
+        int depsCnt = 0;
+        bool isPendingOnStart = false;
+        bool allowToRunInParallelWithItself = false;
+        std::vector<uint32_t> nextTasks;
+    };
+    std::vector<TaskData> allTasks;
+    allTasks.resize(allNodes.size());
+    for (int i = 0; i < allNodes.size(); i++)
+    {
+        allTasks[i].isPendingOnStart = taskGraph.getFlag(i, 1);
+        allTasks[i].allowToRunInParallelWithItself = !exclusionGraph.isConnected(i, i);
+        taskGraph.iterEdges(i, [&] (uint32_t v) {
+            allTasks[i].nextTasks.push_back(v);
+            allTasks[v].depsCnt++;
+        });
+    }
+    for (TaskData &task : allTasks)
+    {
+        if (task.depsCnt == 0)
+            task.isPendingOnStart = true;
+        if (task.depsCnt == 1)
+            task.depsCnt = 0;
+    }
+
+    compiled.allGroups.resize(groups.size());
+    for (int groupId = 0; groupId < groups.size(); groupId++)
+    {
+        GroupData &group = groups[groupId];
+        uint64_t &initialPendingSubgroups = compiled.allGroups[groupId].initialPending;
+
+        compiled.allGroups[groupId].subGroupsStart = compiled.allSubGroups.size();
+        for (SubgroupData &subgroup : group.subgroups)
+        {
+            const int globalSubgroupId = compiled.allSubGroups.size();
+            compiled.allSubGroups.emplace_back();
+            compiled.allSubGroups.back().excludedMask = subgroup.mask;
+
+            compiled.allSubGroups.back().tasksStart = compiled.allTasks.size();
+            for (uint32_t taskId : subgroup.tasks)
+            {
+                allTasks[taskId].remapTaskId = compiled.allTasks.size();
+                CompiledTaskGraph::Task &task = compiled.allTasks.emplace_back();
+                task.groupId = groupId;
+                task.subGroupId = globalSubgroupId;
+                task.isPendingOnStart = allTasks[taskId].isPendingOnStart;
+                task.allowToRunInParallelWithItself = allTasks[taskId].allowToRunInParallelWithItself;
+                task.task = allNodes[taskId].fn;
+                task.varTask = allNodes[taskId].varFn;
+                task.taskUserData = allNodes[taskId].userData;
+                task.dependencies.store(uint64_t(allTasks[taskId].depsCnt) << 32u, std::memory_order_relaxed);
+                if (task.isPendingOnStart)
+                    initialPendingSubgroups |= 1u << uint64_t(subgroup.subgroupIdx);
+            }
+            compiled.allSubGroups.back().tasksEnd = compiled.allTasks.size();
+        }
+        compiled.allGroups[groupId].subGroupsEnd = compiled.allSubGroups.size();
+    }
+
+    for (TaskData &task : allTasks)
+    {
+        assert(task.remapTaskId < allTasks.size());
+        for (uint32_t nextId: task.nextTasks)
+            compiled.allTasks[task.remapTaskId].nextTasks.push_back(allTasks[nextId].remapTaskId);
+    }
+
     // debug
-    for (GroupData &group : groups)
+    logger::debug("graph", "COMPILED GRAPH");
+    for (int groupId = 0; groupId < compiled.allGroups.size(); groupId++)
     {
-        logger::debug("graph", "group (%i)", group.subgroupCnt);
-        int subgroupIdx = 0;
-        for (auto &subgroup : group.subgroups)
+        CompiledTaskGraph::TaskGroup &group = compiled.allGroups[groupId];
+        logger::debug("graph", "group #%i (%i)", groupId, int(group.subGroupsEnd - group.subGroupsStart));
+        for (int subgroupId = group.subGroupsStart; subgroupId < group.subGroupsEnd; subgroupId++)
         {
-            if (subgroup.tasks.empty())
-                continue;
-            logger::debug_inline("graph", "  subgroup %02i [", subgroupIdx);
+            CompiledTaskGraph::TaskSubGroup &subgroup = compiled.allSubGroups[subgroupId];
+            logger::debug_inline("graph", "  subgroup %02i [", subgroupId);
             for (int i = 0; i < 64; i++)
-                logger::debug_inline("graph", "%i", (subgroup.mask >> uint64_t(i)) & 1);
+                logger::debug_inline("graph", "%i", (subgroup.excludedMask >> uint64_t(i)) & 1);
             logger::debug_inline("graph", "]");
-            for (uint32_t task : subgroup.tasks)
-                logger::debug_inline("graph", " %i", int(task));
-            logger::debug_inline("graph", "\n");
-            subgroupIdx++;
-        }
-    }
-
-    return true;
-}
-
-
-void TaskGraph::buildFibers()
-{
-    entryFiberIds.clear();
-    allFibers.clear();
-    for (uint32_t i = 0; i < allNodes.size(); i++)
-        allNodes[i].fiberId = INVALID_ID;
-
-    for (uint32_t i = 0; i < allNodes.size(); i++)
-    {
-        if (allNodes[i].fiberId != INVALID_ID)
-            continue;
-        // find base
-        uint32_t base = i;
-        while (true)
-        {
-            if (allNodes[base].prevTasks.size() != 1)
-                break;
-            uint32_t prev = allNodes[base].prevTasks.front();
-            if (allNodes[prev].fiberId != INVALID_ID)
-                break;
-            base = prev;
-        }
-        Fiber fiber;
-        fiber.dependencies = allNodes[base].prevTasks;
-        uint32_t fiberId = allFibers.size();
-
-        // find end and assign fiber
-        uint32_t end = base;
-        while (true)
-        {
-            allNodes[end].fiberId = fiberId;
-            fiber.tasks.push_back(end);
-            uint32_t next = INVALID_ID;
-            for (uint32_t id : allNodes[end].nextTasks)
-                if (allNodes[id].fiberId == INVALID_ID)
-                    next = id;
-            if (next == INVALID_ID)
-                break;
-            end = next;
-        }
-
-        if (fiber.dependencies.empty())
-            entryFiberIds.push_back(fiberId);
-        allFibers.push_back(std::move(fiber));
-    }
-}
-
-template<typename U, typename F>
-void TaskGraph::traverseNodeSequence(std::vector<U>& stack, std::vector<uint32_t>& visited, uint32_t node, F&& f)
-{
-    if (std::find(visited.begin(), visited.end(), node) != visited.end())
-        return;
-    stack.push_back(f(node));
-    visited.push_back(node);
-    auto tasks = allNodes[node].nextTasks;
-    for (uint32_t next : tasks)
-        traverseNodeSequence(stack, visited, next, f);
-    stack.pop_back();
-}
-
-void TaskGraph::dumpToLog()
-{
-    std::vector<std::stringstream> rows;
-    rows.resize(allFibers.size());
-
-    struct FiberPrintData
-    {
-        uint32_t id = INVALID_ID;
-        int pos;
-        std::vector<uint32_t> deps;
-        bool hadDeps;
-    };
-    std::vector<FiberPrintData> fibersToPrint;
-
-    int baseStartPos = 0;
-    for (uint32_t id = 0; id < allFibers.size(); id++)
-    {
-        fibersToPrint.push_back(FiberPrintData{id, 0, allFibers[id].dependencies, !allFibers[id].dependencies.empty()});
-        rows[id] << "[ ";
-        for (uint32_t t : allFibers[id].dependencies)
-            rows[id] << t << " ";
-        rows[id] << "] ";
-        baseStartPos = std::max<int>(baseStartPos, rows[id].view().size());
-    }
-    for (FiberPrintData &f : fibersToPrint)
-        f.pos = baseStartPos + 1;
-
-    auto addSpace = [&] (uint32_t idx, int required_len)
-    {
-        auto &ss = rows[idx];
-        while (ss.view().size() < required_len)
-            ss << ' ';
-    };
-
-    while (true)
-    {
-        FiberPrintData fiber;
-        for (auto it = fibersToPrint.begin(); it != fibersToPrint.end(); it++)
-        {
-            if (it->deps.empty())
+            for (uint32_t taskId = subgroup.tasksStart; taskId < subgroup.tasksEnd; taskId++)
             {
-                fiber = std::move(*it);
-                fibersToPrint.erase(it);
-                break;
-            }
-        }
-        if (fiber.id == INVALID_ID)
-            break;
-        addSpace(fiber.id, fiber.pos);
-
-        bool first = true;
-        for (uint32_t taskId : allFibers[fiber.id].tasks)
-        {
-            if (first && fiber.hadDeps)
-                rows[fiber.id] << "|---> ";
-            else if (!first)
-                rows[fiber.id] << " --> ";
-            first = false;
-            rows[fiber.id] << taskId;
-
-            for (FiberPrintData &f : fibersToPrint)
-            {
-                while (true)
+                CompiledTaskGraph::Task &task = compiled.allTasks[taskId];
+                int deps = int(task.dependencies >> 32u);
+                if (deps == 0 && !task.isPendingOnStart)
+                    deps = 1;
+                logger::debug_inline("graph", " %i{d:%i", int(taskId), deps);
+                if (!task.nextTasks.empty())
                 {
-                    if (auto it = std::find(f.deps.begin(), f.deps.end(), taskId); it != f.deps.end())
-                    {
-                        f.deps.erase(it);
-                        f.pos = std::max<int>(f.pos, rows[fiber.id].view().size() - 1);
-                    }
-                    else
-                        break;
+                    logger::debug_inline("graph", " next:");
+                    for (uint32_t nextId : task.nextTasks)
+                        logger::debug_inline("graph", " %i", nextId);
                 }
+                logger::debug_inline("graph", "} ", int(taskId), deps);
             }
+            logger::debug_inline("graph", "\n");
         }
     }
 
-    for (auto &ss : rows)
-    {
-        auto s = ss.str();
-        logger::debug("graph", "%s", s.c_str());
-    }
-    logger::flush_default_log();
-}
-
-bool TaskGraph::compileTo(sie::CompiledTaskGraph& graph)
-{
-    /*
-    if (!validateAndNormalize())
-        return false;
-    buildFibers();
-
-    graph.allTasks.clear();
-    graph.allTasks.resize(allNodes.size());
-    for (uint32_t taskId = 0; taskId < allNodes.size(); taskId++)
-    {
-        graph.allTasks[taskId].task = allNodes[taskId].fn;
-        graph.allTasks[taskId].queueId = allNodes[taskId].fiberId;
-    }
-
-    graph.queueNodes.clear();
-    graph.queueNodes.resize(allFibers.size());
-    for (uint32_t fiberId = 0; fiberId < allFibers.size(); fiberId++)
-    {
-        graph.queueNodes[fiberId].taskQueue = allFibers[fiberId].tasks;
-        graph.queueNodes[fiberId].setRequirementsCount(allFibers[fiberId].dependencies.size());
-        for (uint32_t depId : allFibers[fiberId].tasks)
-            graph.allTasks[depId].nextQueues.push_back(fiberId);
-    }
-    */
-
     return true;
 }
+
+
 
 }
