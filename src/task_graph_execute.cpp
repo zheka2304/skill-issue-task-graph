@@ -156,6 +156,8 @@ void ThreadedTaskGraphExecutor::prepareForExecution(int thread_num)
     for (int i = 0; i < int(threadCtxArray.size()); i++)
     {
         SI_TG_ASSERT(!threadCtxArray[i].isSubgroupOwned);
+        threadCtxArray[i].groupId = 0;
+        threadCtxArray[i].subgroupId = 0;
         threadCtxArray[i].numFailedGroups = 0;
         threadCtxArray[i].numFailedSubgroups = 0;
         threadCtxArray[i].executingMask = 0;
@@ -170,6 +172,7 @@ void ThreadedTaskGraphExecutor::prepareForExecution(int thread_num)
     }
     for (int i = prevThreadCtxSize; i < int(threadCtxArray.size()); i++)
     {
+        threadCtxArray[i].executor = this;
         threadCtxArray[i].threadId = i;
         threadCtxArray[i].rndSeed = i;
     }
