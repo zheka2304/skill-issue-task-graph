@@ -16,7 +16,7 @@ bool BaseGraphEdgesRef::operator==(const BaseGraphEdgesRef& rhs) const
     if (size() != rhs.size())
         return false;
     bool r = true;
-    for (int i = 0; i < size(); i++)
+    for (uint32_t i = 0; i < size(); i++)
         r &= data[i] == rhs.data[i];
     return r;
 }
@@ -44,10 +44,10 @@ size_t BaseGraphEdgesRef::hash() const
 
 // BaseGraph
 
-void BaseGraph::resize(int newSize)
+void BaseGraph::resize(int32_t newSize)
 {
     SI_TG_ASSERT(newSize >= 0);
-    if (vertexCnt == newSize)
+    if (int32_t(vertexCnt) == newSize)
         return;
     const uint32_t oldWordCnt = uint32_t((vertexCnt + 63u) / 64u);
     const uint32_t newWordCnt = uint32_t((uint32_t(newSize) + 63u) / 64u);
@@ -209,6 +209,7 @@ TaskId TaskGraph::addSubGraphTask(const TaskData& data, const TaskGraph* graph)
 void TaskGraph::setTaskData(TaskId task, const TaskData& data)
 {
     SI_TG_ASSERT(task.value() < taskData.size());
+    taskData[task.value()].task = data;
 }
 
 void TaskGraph::setNext(TaskId task, TaskId next, bool set)
@@ -293,12 +294,12 @@ void base_graph_dfs(BaseGraphT& graph, uint32_t v, uint32_t visited_flag, F&& f)
     });
 }
 
-static int task_graph_resolve_size(const TaskGraph &graph)
+static uint32_t task_graph_resolve_size(const TaskGraph &graph)
 {
     int count = 0;
-    for (int i = 0; i < graph.taskData.size(); i++)
-        if (graph.taskData[i].subGraph != nullptr)
-            count += 2 + task_graph_resolve_size(*graph.taskData[i].subGraph); // entry + exit tasks
+    for (const TaskGraph::TaskDataExt &task : graph.taskData)
+        if (task.subGraph != nullptr)
+            count += 2 + task_graph_resolve_size(*task.subGraph); // entry + exit tasks
         else
             count++;
     return count;
@@ -334,7 +335,7 @@ static void resolve_resources_and_dependencies(PrebuiltTaskGraph &prebuilt, cons
             }
     }
 
-    for (int i = 0; i < graph.taskData.size(); i++)
+    for (uint32_t i = 0; i < graph.taskData.size(); i++)
     {
         if (graph.taskData[i].subGraph != nullptr)
         {
@@ -357,7 +358,7 @@ static void resolve_resources_and_dependencies(PrebuiltTaskGraph &prebuilt, cons
 
             // rely on the same tasks will be added at the start of recursive call
             subGraphData.tasksStart = prebuilt.subGraphTasks.size();
-            for (int j = 0; j < subGraph.taskData.size(); j++)
+            for (uint32_t j = 0; j < subGraph.taskData.size(); j++)
             {
                 // intentionally include subgraph tasks, these tasks will become startup
                 // tasks for child subgraphs, so this subgraph will reset their state, in case it restarts
@@ -376,8 +377,8 @@ static void resolve_resources_and_dependencies(PrebuiltTaskGraph &prebuilt, cons
 
 bool prebuild_task_graph(PrebuiltTaskGraph &prebuilt, const TaskGraph &graph)
 {
-    internal::log_debug("building graph");
-    const int totalTaskCount = task_graph_resolve_size(graph);
+    internal::log_debug("building graph\n");
+    const uint32_t totalTaskCount = task_graph_resolve_size(graph);
     prebuilt.taskGraph.resize(totalTaskCount);
     prebuilt.exclusionGraph.resize(totalTaskCount);
     prebuilt.taskData.reserve(totalTaskCount);
@@ -417,7 +418,7 @@ bool prebuild_task_graph(PrebuiltTaskGraph &prebuilt, const TaskGraph &graph)
         prebuilt.traversalData.clear();
         prebuilt.traversalData.push_back(baseId);
         prebuilt.taskGraph.setFlag(baseId, 0, true);
-        int bfsPos = 0;
+        uint32_t bfsPos = 0;
         while (bfsPos < prebuilt.traversalData.size())
         {
             const uint64_t idAndDepth = uint64_t(prebuilt.traversalData[bfsPos++]);
@@ -440,6 +441,59 @@ bool prebuild_task_graph(PrebuiltTaskGraph &prebuilt, const TaskGraph &graph)
     SI_TG_ASSERT(prebuilt.taskData.size() == prebuilt.exclusionGraph.size());
 
     return true;
+}
+
+void print_compiled_graph(const CompiledTaskGraph &compiled)
+{
+    // debug
+    internal::log_debug("COMPILED GRAPH\n");
+    for (uint32_t groupId = 0; groupId < compiled.allGroups.size(); groupId++)
+    {
+        const CompiledTaskGraph::TaskGroup &group = compiled.allGroups[groupId];
+        internal::log_debug("group #%i (%i)\n", groupId, int(group.subGroupsEnd - group.subGroupsStart));
+        for (uint32_t subgroupId = group.subGroupsStart; subgroupId < group.subGroupsEnd; subgroupId++)
+        {
+            const CompiledTaskGraph::TaskSubGroup &subgroup = compiled.allSubGroups[subgroupId];
+            internal::log_debug("  subgroup %02i (%3i) [", subgroupId - group.subGroupsStart, subgroup.tasksEnd - subgroup.tasksStart);
+            for (int i = 0; i < 64; i++)
+                internal::log_debug("%i", (subgroup.excludedMask >> uint64_t(i)) & uint64_t(1));
+            internal::log_debug("]");
+            for (uint32_t taskId = subgroup.tasksStart; taskId < subgroup.tasksEnd; taskId++)
+            {
+                const CompiledTaskGraph::Task &task = compiled.allTasks[taskId];
+                internal::log_debug("%i{", int(taskId));
+                if (task.subgraphDataIdx != -1)
+                    internal::log_debug("sg:%i|%i ", compiled.subGraphData[task.subgraphDataIdx + 1], compiled.subGraphData[task.subgraphDataIdx + 2]);
+                int deps = int(task.dependencies >> 32u);
+                if (deps == 0 && !task.isPendingOnStart)
+                    deps = 1;
+                internal::log_debug("d:%i", deps);
+                if (task.nextTasksStart != task.nextTasksEnd)
+                {
+                    internal::log_debug(" next:");
+                    for (uint32_t i = task.nextTasksStart; i < task.nextTasksEnd; i++)
+                        internal::log_debug(" %i", compiled.nextTaskIds[i]);
+                }
+                internal::log_debug("} ", int(taskId), deps);
+            }
+            internal::log_debug("\n");
+        }
+    }
+
+    if (!compiled.subGraphData.empty())
+        internal::log_debug("SUB-GRAPHS\n");
+    for (uint32_t idx = 0; idx < compiled.subGraphData.size(); )
+    {
+        const int32_t id = idx;
+        int32_t cnt = compiled.subGraphData[idx++];
+        int32_t subgraphEntryTask = compiled.subGraphData[idx++];
+        int32_t subgraphExitTask = compiled.subGraphData[idx++];
+        idx++;
+        internal::log_debug("  subgraph #%i (%i) [%i|%i]: ", id, cnt, subgraphEntryTask, subgraphExitTask);
+        for (int32_t i = 0; i < cnt; i++)
+            internal::log_debug(" %i", compiled.subGraphData[idx++]);
+        internal::log_debug("\n");
+    }
 }
 
 
@@ -520,13 +574,13 @@ bool compile_task_graph(CompiledTaskGraph &compiled, PrebuiltTaskGraph &prebuilt
             const bool isConnected = group.subgroupExclusionGraph.isConnected(sg1, sg2);
             int value = isConnected ? 1 : 0; // +1 edge eliminated
             group.subgroupExclusionGraph.setConnectedBoth(sg1, sg2, false);
-            for (int i = 0; i < edges1.size(); i++)
+            for (uint32_t i = 0; i < edges1.size(); i++)
                 value += internal::count_set_bits(edges1[i] & edges2[i]); // unified edges will be eliminated
             group.subgroupExclusionGraph.setConnectedBoth(sg1, sg2, isConnected);
             return value;
         };
 
-        const auto calcPairSetValue = [&] (MergeState &state, uint32_t sg1, uint32_t sg2)
+        const auto calcPairSetValue = [&] (MergeState &state, int32_t sg1, int32_t sg2)
         {
             if (state.sgPair[sg1] == sg2)
             {
@@ -658,7 +712,7 @@ bool compile_task_graph(CompiledTaskGraph &compiled, PrebuiltTaskGraph &prebuilt
                     mergeSubgroups(sg1, baseState.sgPair[sg1]);
                 group.subgroupExclusionGraph.iterEdges(sg1, [&] (uint32_t sg2) { SI_TG_ASSERT(!group.subgroups[sg2].tasks.empty()); });
             }
-            internal::log_debug("  merged %i/%i subgroups, value: %i, remaining %i", baseState.pairCnt * 2, cntBeforeMerge, baseState.totalValue, group.subgroupCnt);
+            internal::log_debug("  merged %i/%i subgroups, value: %i, remaining %i\n", baseState.pairCnt * 2, cntBeforeMerge, baseState.totalValue, group.subgroupCnt);
         }
     }
 
@@ -667,14 +721,14 @@ bool compile_task_graph(CompiledTaskGraph &compiled, PrebuiltTaskGraph &prebuilt
     {
         int prevCandidateIdx = -1;
         bool anyMerged = false;
-        for (int i = 0; i < c_state.groups.size(); i++)
+        for (uint32_t i = 0; i < c_state.groups.size(); i++)
         {
             if (prevCandidateIdx >= 0 && c_state.groups[i].subgroupCnt + c_state.groups[prevCandidateIdx].subgroupCnt <= 32)
             {
                 GroupData &dst = c_state.groups[prevCandidateIdx];
                 GroupData &src = c_state.groups[i];
                 dst.subgroupExclusionGraph.resize(dst.subgroupExclusionGraph.size() + src.subgroupExclusionGraph.size());
-                for (int sg1 = 0; sg1 < src.subgroups.size(); sg1++)
+                for (uint32_t sg1 = 0; sg1 < src.subgroups.size(); sg1++)
                 {
                     if (src.subgroups[sg1].tasks.empty())
                         continue;
@@ -721,12 +775,12 @@ bool compile_task_graph(CompiledTaskGraph &compiled, PrebuiltTaskGraph &prebuilt
         // cleanup
         group.subgroups.erase(std::remove_if(group.subgroups.begin(), group.subgroups.end(), [&] (auto &sg) { return sg.tasks.empty(); }), group.subgroups.end());
         for (uint32_t i = 0; i < group.subgroups.size(); i++)
-            SI_TG_ASSERT(i == group.subgroups[i].subgroupIdx);
+            SI_TG_ASSERT(int32_t(i) == group.subgroups[i].subgroupIdx);
     }
 
     // write to compiled
     c_state.allTasks.resize(prebuilt.taskData.size());
-    for (int i = 0; i < prebuilt.taskData.size(); i++)
+    for (uint32_t i = 0; i < prebuilt.taskData.size(); i++)
     {
         c_state.allTasks[i].isPendingOnStart = prebuilt.taskGraph.getFlag(i, 1);
         c_state.allTasks[i].allowToRunInParallelWithItself = !prebuilt.exclusionGraph.isConnected(i, i);
@@ -744,7 +798,7 @@ bool compile_task_graph(CompiledTaskGraph &compiled, PrebuiltTaskGraph &prebuilt
     }
 
     compiled.allGroups.resize(c_state.groups.size());
-    for (int groupId = 0; groupId < c_state.groups.size(); groupId++)
+    for (uint32_t groupId = 0; groupId < c_state.groups.size(); groupId++)
     {
         GroupData &group = c_state.groups[groupId];
         uint64_t &initialPendingSubgroups = compiled.allGroups[groupId].initialPending;
@@ -752,7 +806,7 @@ bool compile_task_graph(CompiledTaskGraph &compiled, PrebuiltTaskGraph &prebuilt
         compiled.allGroups[groupId].subGroupsStart = compiled.allSubGroups.size();
         for (SubgroupData &subgroup : group.subgroups)
         {
-            const int globalSubgroupId = compiled.allSubGroups.size();
+            const uint32_t globalSubgroupId = compiled.allSubGroups.size();
             compiled.allSubGroups.emplace_back();
             compiled.allSubGroups.back().excludedMask = subgroup.mask;
             SI_TG_ASSERT(globalSubgroupId == subgroup.subgroupIdx + compiled.allGroups[groupId].subGroupsStart);
@@ -808,57 +862,6 @@ bool compile_task_graph(CompiledTaskGraph &compiled, PrebuiltTaskGraph &prebuilt
             compiled.subGraphData.push_back(c_state.allTasks[prebuilt.subGraphTasks[i]].remapTaskId);
     }
 
-    // debug
-#if 1
-    internal::log_debug("COMPILED GRAPH\n");
-    for (int groupId = 0; groupId < compiled.allGroups.size(); groupId++)
-    {
-        CompiledTaskGraph::TaskGroup &group = compiled.allGroups[groupId];
-        internal::log_debug("group #%i (%i)\n", groupId, int(group.subGroupsEnd - group.subGroupsStart));
-        for (int subgroupId = group.subGroupsStart; subgroupId < group.subGroupsEnd; subgroupId++)
-        {
-            CompiledTaskGraph::TaskSubGroup &subgroup = compiled.allSubGroups[subgroupId];
-            internal::log_debug("  subgroup %02i (%3i) [", subgroupId - group.subGroupsStart, subgroup.tasksEnd - subgroup.tasksStart);
-            for (int i = 0; i < 64; i++)
-                internal::log_debug("%i", (subgroup.excludedMask >> uint64_t(i)) & uint64_t(1));
-            internal::log_debug("]");
-            for (uint32_t taskId = subgroup.tasksStart; taskId < subgroup.tasksEnd; taskId++)
-            {
-                CompiledTaskGraph::Task &task = compiled.allTasks[taskId];
-                internal::log_debug("%i{", int(taskId));
-                if (task.subgraphDataIdx != -1)
-                    internal::log_debug("sg:%i|%i ", compiled.subGraphData[task.subgraphDataIdx + 1], compiled.subGraphData[task.subgraphDataIdx + 2]);
-                int deps = int(task.dependencies >> 32u);
-                if (deps == 0 && !task.isPendingOnStart)
-                    deps = 1;
-                internal::log_debug("d:%i", deps);
-                if (task.nextTasksStart != task.nextTasksEnd)
-                {
-                    internal::log_debug(" next:");
-                    for (int i = task.nextTasksStart; i < task.nextTasksEnd; i++)
-                        internal::log_debug(" %i", compiled.nextTaskIds[i]);
-                }
-                internal::log_debug("} ", int(taskId), deps);
-            }
-            internal::log_debug("\n");
-        }
-    }
-
-    if (!compiled.subGraphData.empty())
-        internal::log_debug("SUB-GRAPHS\n");
-    for (int idx = 0; idx < compiled.subGraphData.size(); )
-    {
-        const int32_t id = idx;
-        int32_t cnt = compiled.subGraphData[idx++];
-        int32_t subgraphEntryTask = compiled.subGraphData[idx++];
-        int32_t subgraphExitTask = compiled.subGraphData[idx++];
-        idx++;
-        internal::log_debug("  subgraph #%i (%i) [%i|%i]: ", id, cnt, subgraphEntryTask, subgraphExitTask);
-        for (uint32_t i = 0; i < cnt; i++)
-            internal::log_debug(" %i", compiled.subGraphData[idx++]);
-        internal::log_debug("\n");
-    }
-#endif
     return true;
 }
 

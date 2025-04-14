@@ -20,7 +20,12 @@ struct BitIter
         idx_++;
         if ((word >> idx_) == 0)
             return false;
+#ifdef SI_TG_FIRST_SET_BIT
         idx_ += SI_TG_FIRST_SET_BIT(word >> idx_);
+#else
+        while (word && (((word >> idx_) & 1u) == 0))
+            idx_++;
+#endif
         return true;
     }
     uint64_t idx() const { return idx_ < 0 ? 0 : idx_; }
@@ -37,9 +42,14 @@ uint64_t iter_set_bits(uint64_t word, F&& f, uint64_t offs = 0)
     uint64_t idx = 0;
     while (word != 0)
     {
+#ifdef SI_TG_FIRST_SET_BIT
         uint64_t s = SI_TG_FIRST_SET_BIT(word);
         idx += s;
         word >>= s;
+#else
+        while (word != 0 && (word & 1u) == 0)
+            idx++, word >>= 1;
+#endif
         SI_TG_ASSERT(bool(word &1u));
         f(idx + offs);
         idx++;
@@ -51,7 +61,14 @@ uint64_t iter_set_bits(uint64_t word, F&& f, uint64_t offs = 0)
 
 inline uint64_t count_set_bits(uint64_t word)
 {
+#ifdef SI_TG_COUNT_SET_BITS
     return SI_TG_COUNT_SET_BITS(word);
+#else
+    uint64_t cnt = 0;
+    while (word)
+        cnt += (word & 1u), word >>= 1;
+    return cnt;
+#endif
 }
 
 }
@@ -66,7 +83,7 @@ struct BaseGraphEdgesRef
     explicit BaseGraphEdgesRef(uint64_t *data, uint32_t cnt) : data(data), cnt(cnt) {}
     uint64_t *begin() const { return data; }
     uint64_t *end() const { return data + cnt; }
-    uint64_t size() const { return cnt; }
+    uint32_t size() const { return cnt; }
     uint64_t &operator[](uint32_t i) const { SI_TG_ASSERT(i < cnt); return data[i]; }
 
     template<typename F>
@@ -99,11 +116,11 @@ struct BaseGraph
     BaseGraph &operator=(BaseGraph &&rhs);
     void copyFrom(const BaseGraph &rhs);
 
-    void reserve(int newSize);
-    void resize(int newSize);
+    void reserve(int32_t newSize);
+    void resize(int32_t newSize);
     void clear() { resize(0); }
     // vertex count
-    int32_t size() const { return vertexCnt; }
+    size_t size() const { return vertexCnt; }
 
     void setConnected(uint32_t v1, uint32_t v2, bool set);
     void setConnectedBoth(uint32_t v1, uint32_t v2, bool set)
@@ -123,10 +140,10 @@ struct BaseGraph
 
 private:
     Vector<uint64_t> connections;
-    uint32_t vertexCnt = 0;
-    uint32_t wordCnt = 0;
+    size_t vertexCnt = 0;
+    size_t wordCnt = 0;
     Vector<uint64_t> vertexFlags;
-    uint32_t vertexFlagCount = 0;
+    size_t vertexFlagCount = 0;
 };
 
 struct TaskId

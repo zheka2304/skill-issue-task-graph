@@ -66,12 +66,12 @@ void SimpleThreadPool::doThread(int thread_id)
     };
 
     TP_VERBOSE("startup %i", thread_id);
-    SI_TG_PROFILE_INTERNAL("worker_thread");
+    SI_TG_PROFILE("worker_thread");
     while (running)
     {
         {
             // debug("exec", "[%i] idle started %u", thread_id, uint32_t(wakeEvent.wakeMask.load()));
-            SI_TG_PROFILE_INTERNAL("thread_idle");
+            SI_TG_PROFILE("thread_idle");
             TP_VERBOSE("[%i] thread wait", thread_id);
             doneEvent.wakeThread(thread_id);
             idleEvent.waitThread(thread_id);

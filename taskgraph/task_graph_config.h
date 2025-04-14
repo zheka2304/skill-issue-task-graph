@@ -41,9 +41,7 @@ void assert_handler(const char* fmt, ...);
 #define SI_TG_COUNT_SET_BITS __builtin_popcountll
 #endif
 
-#define SI_TG_PROFILE_THREAD(...) // OPTICK_EVENT(__VA_ARGS__)
-#define SI_TG_PROFILE_INTERNAL(...) // OPTICK_EVENT(__VA_ARGS__)
-#define SI_TG_PROFILE_EXCESSIVE(...) // OPTICK_EVENT(__VA_ARGS__)
+#define SI_TG_RESTRICT __restrict
 
 
 namespace si::tg
@@ -62,3 +60,24 @@ using FlatHashMultiMap = std::unordered_multimap<K, V, Hash>;
 
 using WakeThreadsCallback = std::function<void(uint64_t mask)>;
 }
+
+#ifdef SI_TG_USE_OPTICK
+#include "optick.h"
+#define SI_TG_PROFILE_THREAD(...) OPTICK_THREAD(__VA_ARGS__)
+#define SI_TG_PROFILE(...) OPTICK_EVENT(__VA_ARGS__)
+#define SI_TG_PROFILE_INTERNAL(...) // SI_TG_PROFILE(__VA_ARGS__)
+#define SI_TG_PROFILE_EXCESSIVE(...) // SI_TG_PROFILE(__VA_ARGS__)
+#endif
+
+#ifndef SI_TG_PROFILE_THREAD
+#define SI_TG_PROFILE_THREAD(...)
+#endif
+#ifndef SI_TG_PROFILE
+#define SI_TG_PROFILE(...)
+#endif
+#ifndef SI_TG_PROFILE_INTERNAL
+#define SI_TG_PROFILE_INTERNAL(...)
+#endif
+#ifndef SI_TG_PROFILE_EXCESSIVE
+#define SI_TG_PROFILE_EXCESSIVE(...)
+#endif

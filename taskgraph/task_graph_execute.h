@@ -21,7 +21,7 @@ struct CompiledTaskGraph
         std::atomic<uint64_t> pending = 0;
         std::atomic<uint64_t> executing = 0;
         // 16 bytes
-        char _falseSharingPad[128 - 16];
+        [[maybe_unused]] char _falseSharingPad[128 - 16];
 
         TaskGroupState() = default;
         TaskGroupState(const TaskGroupState &rhs) { memcpy(this, &rhs, offsetof(TaskGroupState, _falseSharingPad)); }
@@ -165,8 +165,7 @@ struct ThreadedTaskGraphExecutor
     };
 
     Array<int64_t, uint8_t(Event::NUM)> getEventCountStats() const;
-
-    Vector<TimedEvent> getAllTimedEvents() const;
+    void getAllTimedEvents(Vector<TimedEvent> &events) const;
 
 private:
 
@@ -194,7 +193,7 @@ private:
         Vector<TimedEvent> timedEvents;
 #endif
 
-        char _falseSharingPad[128];
+        [[maybe_unused]] char _falseSharingPad[128];
 
         ~ThreadCtx();
 
@@ -202,23 +201,23 @@ private:
         void addEvent(int64_t v, Args &&... args);
     };
     Vector<ThreadCtx> threadCtxArray;
-    const char _falseSharingPad[128] = {0};
+    [[maybe_unused]] char _falseSharingPad[128];
     std::atomic<uint64_t> sleepingThreadsMask = 0;
     std::atomic<bool> allDoneEventPending = false;
 #if SI_TG_ENABLE_DEBUG_TIMED_EVENTS
     std::atomic<int64_t> curTimedEventIdx;
 #endif
 
-    bool doGroupUntilSubgroupEnter(ThreadCtx & __restrict ctx, bool allow_var_tasks);
+    bool doGroupUntilSubgroupEnter(ThreadCtx & SI_TG_RESTRICT ctx, bool allow_var_tasks);
     uint64_t gatherThreadsToWake();
 
-    bool tryEnterSubgroup(ThreadCtx &ctx, uint32_t group_id, uint32_t subgroup_id, uint64_t &executing, bool loop);
-    std::pair<uint32_t, uint32_t> tryAcquireVarTask(ThreadCtx &ctx, uint32_t group_id, uint32_t subgroup_id);
-    void leaveSubgroup(ThreadCtx &ctx, uint32_t group_id, uint32_t subgroup_id);
-    bool doSubGroup(ThreadCtx &ctx, uint32_t group_id, uint32_t subgroup_id);
-    bool doVarTask(ThreadCtx &ctx, uint32_t subgroup_id, uint32_t task_id, uint32_t var_task_idx);
-    void doSubGraphTask(ThreadCtx &ctx, uint32_t task_id);
-    bool afterTaskDone(ThreadCtx &ctx, uint32_t task_id);
+    bool tryEnterSubgroup(ThreadCtx & SI_TG_RESTRICT ctx, uint32_t group_id, uint32_t subgroup_id, uint64_t &executing, bool loop);
+    std::pair<uint32_t, uint32_t> tryAcquireVarTask(ThreadCtx & SI_TG_RESTRICT ctx, uint32_t group_id, uint32_t subgroup_id);
+    void leaveSubgroup(ThreadCtx & SI_TG_RESTRICT ctx, uint32_t group_id, uint32_t subgroup_id);
+    bool doSubGroup(ThreadCtx & SI_TG_RESTRICT ctx, uint32_t group_id, uint32_t subgroup_id);
+    bool doVarTask(ThreadCtx & SI_TG_RESTRICT ctx, uint32_t subgroup_id, uint32_t task_id, uint32_t var_task_idx);
+    void doSubGraphTask(ThreadCtx & SI_TG_RESTRICT ctx, uint32_t task_id);
+    bool afterTaskDone(ThreadCtx & SI_TG_RESTRICT ctx, uint32_t task_id);
 };
 
 }

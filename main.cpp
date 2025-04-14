@@ -24,11 +24,12 @@ void assert_handler(const char *str)
 
 void some_work()
 {
-    OPTICK_EVENT("test_task");
+    // OPTICK_EVENT("test_task");
     volatile int x = 0;
     volatile int y = 0;
     for (int i = 0; i < 1000; i++)
         x = y;
+    (void) x;
 }
 
 template<int GroupId>
@@ -41,13 +42,13 @@ void append_random_task_graph(si::tg::TaskGraph &graph, int sz, int res_ofs)
     for (int i = 0; i < sz; i++)
     {
         TaskId id = graph.addTask({
-            .taskFn = +[](void* data, int idx) {
-                dbgTasksDone.fetch_add(1, std::memory_order_relaxed);
-                // some_work()
+            .taskFn = +[]([[maybe_unused]] void* data, [[maybe_unused]] int idx) {
+                // dbgTasksDone.fetch_add(1, std::memory_order_relaxed);
+                some_work();
                 // printf("    [%i] test task %i (%i)\n", GroupId, (int) (intptr_t) data, idx);
             },
             .taskVarFn = nullptr,
-            .userData = (void*) (i + idxOfs)
+            .userData = (void*) intptr_t(i + idxOfs)
         });
         tasks.push_back(id);
     }
@@ -74,7 +75,7 @@ void init_random_task_graph(TaskGraph &graph)
     // append_random_task_graph(graph, 1000, 190);
 }
 
-void execute_task_graph(CompiledTaskGraph &graph, int thread_num = 8)
+void execute_task_graph(CompiledTaskGraph &graph, int thread_num = 4)
 {
     sie::logger::debug("exec", "start");
     sie::logger::flush_default_log();
@@ -86,8 +87,8 @@ void execute_task_graph(CompiledTaskGraph &graph, int thread_num = 8)
         OPTICK_FRAME("MainThread");
         OPTICK_EVENT()
         dbgTasksDone = 0;
-        pool.execute(&graph, false);
-        SI_TG_ASSERT(dbgTasksDone == 1000);
+        pool.execute(&graph, true);
+        // SI_TG_ASSERT(dbgTasksDone == 1000);
     }
 
     /*
@@ -107,13 +108,13 @@ int main()
     OPTICK_START_CAPTURE();
 
     TaskGraph graph1;
-    graph1.addTask({.taskFn = +[] (void*, int i) { dbgTasksDone++; }, .taskVarFn = +[] (void*) { return 100; } });
-    // append_random_task_graph<1>(graph1, 1000, 0);
+    // graph1.addTask({.taskFn = +[] (void*, int i) { dbgTasksDone++; }, .taskVarFn = +[] (void*) { return 100; } });
+    append_random_task_graph<1>(graph1, 1000, 0);
     TaskGraph graph2;
-    append_random_task_graph<2>(graph2, 1000, 0);
+    // append_random_task_graph<2>(graph2, 1000, 0);
     TaskGraph graph;
     {
-        auto t1 = graph.addSubGraphTask({.taskVarFn = +[] (void*) { return 10; }}, &graph1);
+        [[maybe_unused]] auto t1 = graph.addSubGraphTask({.taskVarFn = +[] (void*) { return 10; }}, &graph1);
         // auto t2 = graph.addSubGraphTask({.taskVarFn = +[] (void*) { return 1; }}, &graph2);
         // auto t3 = graph.addSubGraphTask({.taskVarFn = +[] (void*) { return 5; }}, &graph3);
         // graph.setNext(t1, t2);
