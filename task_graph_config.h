@@ -6,8 +6,12 @@
 #include <functional>
 #include <cassert>
 
-#define SI_TG_ASSERT assert
-#define SI_TG_ASSERT_FMT(E, ...) assert(E)
+void assert_handler(const char *fmt);
+#define ASSERT_STRING_BUILD0(FILE, LINE) "ASSERT FAILED " #FILE ":" #LINE ": "
+#define ASSERT_STRING_BUILD(FILE, LINE) ASSERT_STRING_BUILD0(FILE, LINE)
+
+#define SI_TG_ASSERT(E) do { if (!(E)) { assert_handler(ASSERT_STRING_BUILD(__FILE__, __LINE__) #E); } } while (0)
+#define SI_TG_ASSERT_FMT(E, ...) SI_TG_ASSERT(E)
 
 #define SI_TG_ENABLE_DEBUG_STAT_EVENTS 0
 #define SI_TG_ENABLE_DEBUG_TIMED_EVENTS 0

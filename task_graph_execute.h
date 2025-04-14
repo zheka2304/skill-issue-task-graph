@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <atomic>
 #include <thread>
 #include <condition_variable>
@@ -105,6 +106,7 @@ struct ThreadedTaskGraphExecutor
 
     void prepareForExecution(int thread_num);
     ThreadResult doThread(int thread_id, const WakeThreadsCallback &wake_threads);
+    void validateAllDone() const;
 
     enum class Event : uint8_t
     {
@@ -186,18 +188,6 @@ struct ThreadedTaskGraphExecutor
 
 private:
 
-    struct ThreadOwnershipLock
-    {
-        static constexpr uint32_t STATE_NONE = 0;
-        static constexpr uint32_t STATE_WAITING = 1;
-        static constexpr uint32_t STATE_OWNED = 2;
-
-        std::atomic<uint32_t> state = STATE_NONE;
-        char _falseSharingPad[60];
-        ThreadOwnershipLock() = default;
-        ThreadOwnershipLock(ThreadOwnershipLock &&) {}
-    };
-
     struct ThreadCtx
     {
         int threadId;
@@ -218,17 +208,26 @@ private:
         std::array<int64_t, uint8_t(Event::NUM)> eventCnt = {0};
         std::vector<TimedEvent> timedEvents;
 
-        ThreadOwnershipLock ownershipLock;
         char _falseSharingPad[128];
+
+        ~ThreadCtx()
+        {
+            SI_TG_ASSERT(!isSubgroupOwned);
+        }
 
         template<Event Evt, typename ...Args>
         void addEvent(int64_t v, Args &&... args)
         {
             if (false)
             if (Evt != Event::SUBGROUP_ENTER_ATTEMPT &&
+                Evt != Event::SUBGROUP_ENTER_CAS &&
+                Evt != Event::PENDING_INC_DEPENDENCY
+                &&
                 Evt != Event::THREAD_WAIT &&
                 Evt != Event::THREAD_NOTHING_PENDING &&
-                Evt != Event::THREAD_START_GROUP)
+                Evt != Event::THREAD_START_GROUP &&
+                Evt != Event::THREAD_EXIT
+                )
             {
                 if (sizeof...(args) == 0)
                     sie::logger::debug("exec", "[%i] %s", threadId, EVENT_NAMES[int(Evt)], int(args)...);
@@ -251,6 +250,9 @@ private:
         }
     };
     Vector<ThreadCtx> threadCtxArray;
+    const char _falseSharingPad[128] = {0};
+    std::atomic<uint64_t> sleepingThreadsMask = 0;
+    std::atomic<bool> allDoneEventPending = false;
 #if SI_TG_ENABLE_DEBUG_TIMED_EVENTS
     std::atomic<int64_t> curTimedEventIdx;
 #endif
@@ -270,27 +272,44 @@ private:
 
 struct SimpleThreadPool
 {
-    ThreadedTaskGraphExecutor* executor;
-
     SimpleThreadPool() = default;
     ~SimpleThreadPool();
     SimpleThreadPool(const SimpleThreadPool&) = delete;
     SimpleThreadPool& operator=(const SimpleThreadPool&) = delete;
 
-    void windUp(int count);
+    void windUpThreads(int thread_num);
+    void shutdownThreads();
+    void execute(CompiledTaskGraph *graph);
+    void waitDone();
     void wakeAll();
-    void waitAll();
-    void shutdown();
+
+    struct CondVar
+    {
+        std::mutex mutex;
+        std::condition_variable condVar;
+        std::atomic<uint64_t> word = 0;
+
+        void wakeThread(int tid) { wakeMask(uint64_t(1) << uint64_t(tid)); }
+        void waitThread(int thread_id);
+        void wakeMask(uint64_t mask);
+        void waitMask(uint64_t mask);
+        void waitMaskImpl(std::unique_lock<std::mutex> &lock, uint64_t mask);
+    };
+
+    static thread_local int thisThreadId;
 
 private:
+    void doThread(int thread_id);
     static void exec(SimpleThreadPool* self, int thread_id);
 
 private:
-    std::vector<std::thread> threads;
-    std::condition_variable condVar;
-    std::mutex condVarMutex;
-    std::atomic<uint64_t> wakeThreadsMask = 0;
+    ThreadedTaskGraphExecutor executor;
+
     bool running = false;
+    std::vector<std::thread> threads;
+    CondVar idleEvent;
+    CondVar wakeEvent;
+    CondVar doneEvent;
 };
 
 }

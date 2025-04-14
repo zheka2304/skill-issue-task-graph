@@ -185,8 +185,6 @@ bool prebuild_task_graph(PrebuiltTaskGraph &prebuilt, const TaskGraph &graph)
 {
     logger::debug("compile", "building graph");
     const int totalTaskCount = task_graph_resolve_size(graph);
-    prebuilt.taskGraph.reserve(totalTaskCount);
-    prebuilt.taskGraph.copyFrom(graph.taskOrderGraph);
     prebuilt.taskGraph.resize(totalTaskCount);
     prebuilt.exclusionGraph.resize(totalTaskCount);
     prebuilt.taskData.reserve(totalTaskCount);
@@ -235,7 +233,11 @@ bool prebuild_task_graph(PrebuiltTaskGraph &prebuilt, const TaskGraph &graph)
             if (depth != 0)
                 prebuilt.exclusionGraph.setConnectedBoth(baseId, curId, false);
             if (depth > 1)
+            {
+                if (prebuilt.taskGraph.isConnected(baseId, curId))
+                    logger::debug("prebuilt", "disconnect %i %i", baseId, curId);
                 prebuilt.taskGraph.setConnected(baseId, curId, false);
+            }
             prebuilt.taskGraph.iterEdges(curId, [&] (uint32_t nextId) {
                 if (prebuilt.taskGraph.getFlag(nextId, 0))
                     return;
@@ -626,6 +628,7 @@ bool compile_task_graph(CompiledTaskGraph &compiled, PrebuiltTaskGraph &prebuilt
     }
 
     // debug
+#if 0
     logger::debug("graph", "COMPILED GRAPH");
     for (int groupId = 0; groupId < compiled.allGroups.size(); groupId++)
     {
@@ -674,6 +677,7 @@ bool compile_task_graph(CompiledTaskGraph &compiled, PrebuiltTaskGraph &prebuilt
             logger::debug_inline("graph", " %i", compiled.subGraphData[idx++]);
         logger::debug_inline("graph", "\n");
     }
+#endif
     return true;
 }
 
