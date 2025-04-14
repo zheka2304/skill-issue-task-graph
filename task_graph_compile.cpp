@@ -388,6 +388,7 @@ bool TaskGraph::validateAndNormalize(CompiledTaskGraph &compiled)
             const int globalSubgroupId = compiled.allSubGroups.size();
             compiled.allSubGroups.emplace_back();
             compiled.allSubGroups.back().excludedMask = subgroup.mask;
+            assert(globalSubgroupId == subgroup.subgroupIdx + compiled.allGroups[groupId].subGroupsStart);
 
             compiled.allSubGroups.back().tasksStart = compiled.allTasks.size();
             for (uint32_t taskId : subgroup.tasks)
@@ -401,14 +402,16 @@ bool TaskGraph::validateAndNormalize(CompiledTaskGraph &compiled)
                 task.task = allNodes[taskId].fn;
                 task.varTask = allNodes[taskId].varFn;
                 task.taskUserData = allNodes[taskId].userData;
-                task.dependencies.store(uint64_t(allTasks[taskId].depsCnt) << 32u, std::memory_order_relaxed);
+                task.dependencies.store(uint64_t(allTasks[taskId].depsCnt) << uint64_t(32u), std::memory_order_relaxed);
                 if (task.isPendingOnStart)
-                    initialPendingSubgroups |= 1u << uint64_t(subgroup.subgroupIdx);
+                    initialPendingSubgroups |= uint64_t(1) << uint64_t(subgroup.subgroupIdx);
             }
             compiled.allSubGroups.back().tasksEnd = compiled.allTasks.size();
         }
         compiled.allGroups[groupId].subGroupsEnd = compiled.allSubGroups.size();
     }
+    compiled.allGroupsState.resize(compiled.allGroups.size());
+    compiled.allSubGroupsState.resize(compiled.allSubGroups.size());
 
     for (TaskData &task : allTasks)
     {
@@ -428,7 +431,7 @@ bool TaskGraph::validateAndNormalize(CompiledTaskGraph &compiled)
             CompiledTaskGraph::TaskSubGroup &subgroup = compiled.allSubGroups[subgroupId];
             logger::debug_inline("graph", "  subgroup %02i [", subgroupId);
             for (int i = 0; i < 64; i++)
-                logger::debug_inline("graph", "%i", (subgroup.excludedMask >> uint64_t(i)) & 1);
+                logger::debug_inline("graph", "%i", (subgroup.excludedMask >> uint64_t(i)) & uint64_t(1));
             logger::debug_inline("graph", "]");
             for (uint32_t taskId = subgroup.tasksStart; taskId < subgroup.tasksEnd; taskId++)
             {

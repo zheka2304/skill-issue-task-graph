@@ -14,32 +14,38 @@ struct CompiledTaskGraph
 {
     struct TaskGroup
     {
+        uint64_t initialPending = 0;
+        uint32_t subGroupsStart = 0;
+        uint32_t subGroupsEnd = 0;
+    };
+
+    struct TaskGroupState
+    {
         std::atomic<uint64_t> pending = 0;
         std::atomic<uint64_t> executing = 0;
-        uint64_t initialPending = 0;
+        // 16 bytes
+        char _falseSharingPad[128 - 16];
 
-        uint32_t subGroupsStart;
-        uint32_t subGroupsEnd;
-        // 24 bytes
-        char _falseSharingPad[128 - 24];
-
-        TaskGroup() = default;
-        TaskGroup(const TaskGroup &rhs) { memcpy(this, &rhs, offsetof(TaskGroup, _falseSharingPad)); }
+        TaskGroupState() = default;
+        TaskGroupState(const TaskGroupState &rhs) { memcpy(this, &rhs, offsetof(TaskGroupState, _falseSharingPad)); }
     };
 
     struct TaskSubGroup
     {
+        uint64_t excludedMask = 0;
+        uint32_t tasksStart = 0;
+        uint32_t tasksEnd = 0;
+    };
+
+    struct TaskSubGroupState
+    {
         std::atomic<uint64_t> curVarTask = 0;
         std::atomic<int64_t> remainingVarTasks = 0;
-        uint64_t excludedMask = 0;
+        // 16 bytes
+        char _falseSharingPad[64 - 16];
 
-        uint32_t tasksStart;
-        uint32_t tasksEnd;
-        // 32 bytes
-        char _falseSharingPad[64 - 32];
-
-        TaskSubGroup() = default;
-        TaskSubGroup(const TaskSubGroup &rhs) { memcpy(this, &rhs, offsetof(TaskSubGroup, _falseSharingPad)); }
+        TaskSubGroupState() = default;
+        TaskSubGroupState(const TaskSubGroupState &rhs) { memcpy(this, &rhs, offsetof(TaskSubGroupState, _falseSharingPad)); }
     };
 
     struct Task
@@ -71,7 +77,9 @@ struct CompiledTaskGraph
     };
 
     std::vector<TaskGroup> allGroups;
+    std::vector<TaskGroupState> allGroupsState;
     std::vector<TaskSubGroup> allSubGroups;
+    std::vector<TaskSubGroupState> allSubGroupsState;
     std::vector<Task> allTasks;
 };
 
@@ -93,7 +101,6 @@ struct ThreadedTaskGraphExecutor
     {
         TASK_EXECUTE_START = 0,
         TASK_EXECUTE_END,
-        TASK_TEST_NEXT,
         TASK_VAR_ACQUIRE_CAS,
         TASK_VAR_ACQUIRE,
         TASK_VAR_WIND_UP,
@@ -115,7 +122,6 @@ struct ThreadedTaskGraphExecutor
     static constexpr const char *EVENT_NAMES[] = {
         "TASK_EXECUTE_START",
         "TASK_EXECUTE_END",
-        "TASK_TEST_NEXT",
         "TASK_VAR_ACQUIRE_CAS",
         "TASK_VAR_ACQUIRE",
         "TASK_VAR_WIND_UP",
@@ -176,19 +182,27 @@ private:
         std::array<int64_t, uint8_t(Event::NUM)> eventCnt = {0};
         std::vector<TimedEvent> timedEvents;
 
+        char _falseSharingPad[128];
+
         template<Event Evt, typename ...Args>
         void addEvent(int64_t v, Args &&... args)
         {
-            if (sizeof...(args) == 0)
-                logger::debug("exec", "[%i] %s", threadId, EVENT_NAMES[int(Evt)], int(args)...);
-            else if (sizeof...(args) == 1)
-                logger::debug("exec", "[%i] %s %i", threadId, EVENT_NAMES[int(Evt)], int(args)...);
-            else if (sizeof...(args) == 2)
-                logger::debug("exec", "[%i] %s %i %i", threadId, EVENT_NAMES[int(Evt)], int(args)...);
-            else if (sizeof...(args) == 3)
-                logger::debug("exec", "[%i] %s %i %i %i", threadId, EVENT_NAMES[int(Evt)], int(args)...);
-            else if (sizeof...(args) == 4)
-                logger::debug("exec", "[%i] %s %i %i %i %i", threadId, EVENT_NAMES[int(Evt)], int(args)...);
+            if (Evt != Event::SUBGROUP_ENTER_ATTEMPT &&
+                Evt != Event::THREAD_WAIT &&
+                Evt != Event::THREAD_NOTHING_PENDING &&
+                Evt != Event::THREAD_START_GROUP)
+            {
+                if (sizeof...(args) == 0)
+                    logger::debug("exec", "[%i] %s", threadId, EVENT_NAMES[int(Evt)], int(args)...);
+                else if (sizeof...(args) == 1)
+                    logger::debug("exec", "[%i] %s %i", threadId, EVENT_NAMES[int(Evt)], int(args)...);
+                else if (sizeof...(args) == 2)
+                    logger::debug("exec", "[%i] %s %i %i", threadId, EVENT_NAMES[int(Evt)], int(args)...);
+                else if (sizeof...(args) == 3)
+                    logger::debug("exec", "[%i] %s %i %i %i", threadId, EVENT_NAMES[int(Evt)], int(args)...);
+                else if (sizeof...(args) == 4)
+                    logger::debug("exec", "[%i] %s %i %i %i %i", threadId, EVENT_NAMES[int(Evt)], int(args)...);
+            }
             eventCnt[int(Evt)] += v;
             if constexpr (Evt == Event::TASK_EXECUTE_START || Evt == Event::TASK_EXECUTE_END)
                 timedEvents.push_back(TimedEvent{ Evt, executor->curTimedEventIdx.fetch_add(1, std::memory_order_relaxed), args... });
@@ -197,7 +211,7 @@ private:
     std::vector<ThreadCtx> threadCtxArray;
     std::atomic<int64_t> curTimedEventIdx;
 
-    bool tryEnterSubgroup(ThreadCtx &ctx, uint32_t group_id, uint32_t subgroup_id, bool loop);
+    bool tryEnterSubgroup(ThreadCtx &ctx, uint32_t group_id, uint32_t subgroup_id, uint64_t &executing, bool loop);
     std::pair<uint32_t, uint32_t> tryAcquireVarTask(ThreadCtx &ctx, uint32_t group_id, uint32_t subgroup_id);
     void leaveSubgroup(ThreadCtx &ctx, uint32_t group_id, uint32_t subgroup_id);
     bool doSubGroup(ThreadCtx &ctx, uint32_t group_id, uint32_t subgroup_id);

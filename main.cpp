@@ -14,7 +14,7 @@ using namespace sie;
 void init_random_task_graph(TaskGraph &graph)
 {
     srand(1234);
-    graph.allNodes.resize(100);
+    graph.allNodes.resize(300);
     for (int i = 0; i < graph.allNodes.size(); i++)
     {
         graph.setTaskData(i, +[] (void* data, int idx)
@@ -25,12 +25,12 @@ void init_random_task_graph(TaskGraph &graph)
             continue;
         for (int n = 0; n < 5; n++)
             graph.setNext(i, i + 1 + rand() % (graph.allNodes.size() - i - 1));
-        for (int n = 0; n < 5; n++)
+        for (int n = 0; n < 10; n++)
             graph.addResource(i, rand() % 100, rand() % 5 == 0);
     }
 }
 
-void execute_task_graph(CompiledTaskGraph &graph, int thread_num = 1)
+void execute_task_graph(CompiledTaskGraph &graph, int thread_num = 4)
 {
     ThreadedTaskGraphExecutor executor;
     executor.graphPtr = &graph;
@@ -40,13 +40,13 @@ void execute_task_graph(CompiledTaskGraph &graph, int thread_num = 1)
     pool.windUp(thread_num);
     pool.waitAll();
 
+    debug("validate", "timed events:");
+    for (const auto &evt : executor.getAllTimedEvents())
+        debug("validate", "  %s %i", ThreadedTaskGraphExecutor::EVENT_NAMES[int(evt.event)], evt.ids[0]);
     debug("validate", "stats:");
     auto stats = executor.getEventCountStats();
     for (int i = 0; i < int(ThreadedTaskGraphExecutor::Event::NUM); i++)
         debug("validate", "  %s %lli", ThreadedTaskGraphExecutor::EVENT_NAMES[i], stats[i]);
-    debug("validate", "timed events:");
-    for (const auto &evt : executor.getAllTimedEvents())
-        debug("validate", "  %s %i", ThreadedTaskGraphExecutor::EVENT_NAMES[int(evt.event)], evt.ids[0]);
 }
 
 
