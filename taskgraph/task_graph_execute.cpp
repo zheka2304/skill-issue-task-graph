@@ -113,9 +113,15 @@ void ThreadedTaskGraphExecutor::prepareForExecution(int thread_num)
 #endif
 }
 
-ThreadedTaskGraphExecutor::ThreadResult ThreadedTaskGraphExecutor::doThread(int thread_id, const WakeThreadsCallback &wake_threads)
+void ThreadedTaskGraphExecutor::setWakeCallback(int thread_id, si::tg::WakeThreadsCallback wake_callback)
+{
+    threadCtxArray[thread_id].wakeCb = std::move(wake_callback);
+}
+
+ThreadedTaskGraphExecutor::ThreadResult ThreadedTaskGraphExecutor::doThread(int thread_id)
 {
     ThreadCtx & __restrict ctx = threadCtxArray[thread_id];
+    const bool hasWakeCb = bool(ctx.wakeCb);
     sleepingThreadsMask.fetch_and(~(uint64_t(1) << uint64_t(thread_id)), std::memory_order_relaxed);
 
     CompiledTaskGraph & __restrict graph = *graphPtr;
@@ -136,11 +142,11 @@ ThreadedTaskGraphExecutor::ThreadResult ThreadedTaskGraphExecutor::doThread(int 
             }
             if (!ctx.isSubgroupOwned)
                 continue;
-            if (wake_threads)
+            if (hasWakeCb)
             {
                 uint64_t wakeMask = gatherThreadsToWake();
                 if (wakeMask)
-                    wake_threads(wakeMask);
+                    ctx.wakeCb(wakeMask);
             }
             SI_TG_PROFILE_EXCESSIVE("do_subgroup")
             ctx.isSubgroupOwned = doSubGroup(ctx, ctx.groupId, ctx.subgroupId);
@@ -172,7 +178,7 @@ ThreadedTaskGraphExecutor::ThreadResult ThreadedTaskGraphExecutor::doThread(int 
         return ThreadResult::EXIT;
     }
     ctx.addEvent<Event::THREAD_WAIT>(1);
-    if (wake_threads)
+    if (hasWakeCb)
         sleepingThreadsMask.fetch_or(uint64_t(1) << uint64_t(thread_id), std::memory_order_relaxed);
     return ThreadResult::WAIT;
 }
@@ -200,10 +206,14 @@ bool ThreadedTaskGraphExecutor::doGroupUntilSubgroupEnter(ThreadCtx & __restrict
             if ((ctx.executingMask >> uint64_t(bitIter.idx())) & uint64_t(1u))
             {
                 const auto [varTaskCnt, varTaskId] = tryAcquireVarTask(ctx, ctx.groupId, ctx.subgroupId);
+                if (varTaskCnt > 2 && ctx.wakeCb)
+                {
+                    uint64_t wakeMask = sleepingThreadsMask.load(std::memory_order_relaxed);
+                    if (wakeMask)
+                        ctx.wakeCb(wakeMask);
+                }
                 if (varTaskCnt > 0 && doVarTask(ctx, ctx.subgroupId, varTaskId, varTaskCnt - 1))
                     ctx.isSubgroupOwned = true;
-                //if (varTaskCnt > 2)
-                //    wake_threads(getWakeThreadMask(varTaskCnt - 2));
             }
         }
         if (!ctx.isSubgroupOwned)

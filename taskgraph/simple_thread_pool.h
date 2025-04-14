@@ -17,7 +17,7 @@ struct SimpleThreadPool
 
     void windUpThreads(int thread_num);
     void shutdownThreads();
-    void execute(CompiledTaskGraph *graph);
+    void execute(CompiledTaskGraph *graph, bool use_wait);
     void waitDone();
     void wakeAll();
 
@@ -44,6 +44,7 @@ private:
     ThreadedTaskGraphExecutor executor;
 
     bool running = false;
+    bool useWait = false;
     std::vector<std::thread> threads;
     CondVar idleEvent;
     CondVar wakeEvent;

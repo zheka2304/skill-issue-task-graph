@@ -30,13 +30,14 @@ void SimpleThreadPool::shutdownThreads()
     threads.clear();
 }
 
-void SimpleThreadPool::execute(si::tg::CompiledTaskGraph* graph)
+void SimpleThreadPool::execute(si::tg::CompiledTaskGraph* graph, bool use_wait)
 {
     doneEvent.word.store(0, std::memory_order_relaxed);
     executor.graphPtr = graph;
 #if !TP_SKIP_EXECUTION
     executor.prepareForExecution(threads.size());
 #endif
+    useWait = use_wait;
     wakeAll();
     waitDone();
 #if !TP_SKIP_EXECUTION
@@ -58,7 +59,13 @@ thread_local int SimpleThreadPool::thisThreadId = -1;
 void SimpleThreadPool::doThread(int thread_id)
 {
     thisThreadId = thread_id;
-    // sie::logger::debug("worker", "startup %i", thread_id);
+
+    const auto wakeThreadsFn = [this](uint64_t mask) {
+        SI_TG_PROFILE_EXCESSIVE("wake_threads");
+        wakeEvent.wakeMask(mask);
+    };
+
+    TP_VERBOSE("startup %i", thread_id);
     SI_TG_PROFILE_INTERNAL("worker_thread");
     while (running)
     {
@@ -71,45 +78,33 @@ void SimpleThreadPool::doThread(int thread_id)
             TP_VERBOSE("[%i] thread wake", thread_id);
             // debug("exec", "[%i] idle ended", thread_id);
         }
+
+        executor.setWakeCallback(thread_id, useWait ? WakeThreadsCallback(wakeThreadsFn) : WakeThreadsCallback());
         while (running)
         {
-            constexpr bool USE_WAIT = false;
-            const auto wakeThreadsFn = [this](uint64_t mask) {
-                SI_TG_PROFILE_EXCESSIVE("wake_threads");
-                internal::iter_set_bits(mask, [&](uint32_t i) {
-                    // sie::logger::debug("worker", "[%i] wake", int(i));
-                });
-                wakeEvent.wakeMask(mask);
-            };
-
 #if !TP_SKIP_EXECUTION
             bool end = false;
             constexpr int MAX_ATTEMPTS = 32;
             for (int i = 0; i < MAX_ATTEMPTS; i++)
             {
-                const ThreadedTaskGraphExecutor::ThreadResult result = executor.doThread(thread_id,
-                                                                                         USE_WAIT ? WakeThreadsCallback(wakeThreadsFn) : WakeThreadsCallback());
+                const ThreadedTaskGraphExecutor::ThreadResult result = executor.doThread(thread_id);
                 end = result != ThreadedTaskGraphExecutor::ThreadResult::WAIT;
                 if (end)
                     break;
-                // SI_TG_PROFILE_EXCESSIVE("thread_yield");
-                // std::this_thread::yield();
             }
 
             if (end)
 #endif
                 break;
 
-            if (USE_WAIT)
+            if (useWait)
             {
                 SI_TG_PROFILE_INTERNAL("thread_wait");
-                // sie::logger::debug("worker", "[%i] wait start", int(thread_id));
                 wakeEvent.waitThread(thread_id);
-                // sie::logger::debug("worker", "[%i] wait end", int(thread_id));
             }
         }
     }
-    // sie::logger::debug("worker", "shutdown %i", thread_id);
+    TP_VERBOSE("shutdown %i", thread_id);
     thisThreadId = -1;
 }
 

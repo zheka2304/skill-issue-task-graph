@@ -101,7 +101,8 @@ struct ThreadedTaskGraphExecutor
     };
 
     void prepareForExecution(int thread_num);
-    ThreadResult doThread(int thread_id, const WakeThreadsCallback &wake_threads);
+    void setWakeCallback(int thread_id, WakeThreadsCallback wake_callback);
+    ThreadResult doThread(int thread_id);
     void validateAllDone() const;
 
     enum class Event : uint8_t
@@ -181,6 +182,7 @@ private:
         uint32_t failedSubgroups = 0;
         uint64_t executingMask = 0;
 
+        WakeThreadsCallback wakeCb;
         ThreadedTaskGraphExecutor *executor;
 
         Vector<uint64_t> subGroupMasksToExecuteNext;

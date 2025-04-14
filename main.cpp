@@ -86,7 +86,7 @@ void execute_task_graph(CompiledTaskGraph &graph, int thread_num = 8)
         OPTICK_FRAME("MainThread");
         OPTICK_EVENT()
         dbgTasksDone = 0;
-        pool.execute(&graph);
+        pool.execute(&graph, false);
         SI_TG_ASSERT(dbgTasksDone == 1000);
     }
 
