@@ -187,6 +187,7 @@ private:
         template<Event Evt, typename ...Args>
         void addEvent(int64_t v, Args &&... args)
         {
+            if (false)
             if (Evt != Event::SUBGROUP_ENTER_ATTEMPT &&
                 Evt != Event::THREAD_WAIT &&
                 Evt != Event::THREAD_NOTHING_PENDING &&

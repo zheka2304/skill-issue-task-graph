@@ -7,6 +7,8 @@
 
 #include "logger.h"
 #include "task_graph_execute.h"
+#include "optick.h"
+
 
 using sie::logger::debug;
 using namespace sie;
@@ -14,31 +16,36 @@ using namespace sie;
 void init_random_task_graph(TaskGraph &graph)
 {
     srand(1234);
-    graph.allNodes.resize(300);
+    graph.allNodes.resize(1000);
     for (int i = 0; i < graph.allNodes.size(); i++)
     {
         graph.setTaskData(i, +[] (void* data, int idx)
         {
+            OPTICK_EVENT("test_task");
             debug("exec", "    test task %i (%i)", (int) (intptr_t) data, idx);
         }, nullptr, (void*) i);
         if (i >= graph.allNodes.size() - 1)
             continue;
         for (int n = 0; n < 5; n++)
             graph.setNext(i, i + 1 + rand() % (graph.allNodes.size() - i - 1));
-        for (int n = 0; n < 10; n++)
-            graph.addResource(i, rand() % 100, rand() % 5 == 0);
+        for (int n = 0; n < 5; n++)
+            graph.addResource(i, rand() % 100, rand() % 10 == 0);
     }
 }
 
-void execute_task_graph(CompiledTaskGraph &graph, int thread_num = 4)
+void execute_task_graph(CompiledTaskGraph &graph, int thread_num = 2)
 {
     ThreadedTaskGraphExecutor executor;
-    executor.graphPtr = &graph;
-    executor.prepareForExecution(thread_num);
-    SimpleThreadPool pool;
-    pool.executor = &executor;
-    pool.windUp(thread_num);
-    pool.waitAll();
+    {
+        OPTICK_FRAME("MainThread");
+        OPTICK_EVENT()
+        executor.graphPtr = &graph;
+        executor.prepareForExecution(thread_num);
+        SimpleThreadPool pool;
+        pool.executor = &executor;
+        pool.windUp(thread_num);
+        pool.waitAll();
+    }
 
     debug("validate", "timed events:");
     for (const auto &evt : executor.getAllTimedEvents())
@@ -49,11 +56,10 @@ void execute_task_graph(CompiledTaskGraph &graph, int thread_num = 4)
         debug("validate", "  %s %lli", ThreadedTaskGraphExecutor::EVENT_NAMES[i], stats[i]);
 }
 
-
 int main()
 {
-
     sie::logger::init_default_log_handler("log.txt");
+    OPTICK_START_CAPTURE();
 
     TaskGraph graph;
     if (1)
@@ -76,26 +82,8 @@ int main()
     assert(graph.validateAndNormalize(compiledGraph));
     execute_task_graph(compiledGraph);
 
-    /*
-    CompiledTaskGraph graph;
-    graph.queueNodes.resize(21);
-    graph.rebuildTree();
-    for (int i = 0; i < 10; i++)
-        graph.setTreeNode(i * 2);
-    //graph.setTreeNode(5);
-    //graph.setTreeNode(8);
-    //graph.setTreeNode(10);
-    sie::logger::flush_default_log();
-
-    {
-        TaskGraphExecutor tree;
-        tree.graph = &graph;
-        tree.windUp(8);
-        tree.wakeAll();
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        tree.shutdown();
-    }*/
-
+    OPTICK_STOP_CAPTURE();
+    OPTICK_SAVE_CAPTURE("../test-capture.opt");
     sie::logger::shutdown_default_log_handler();
     return 0;
 }

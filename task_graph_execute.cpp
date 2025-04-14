@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include "logger.h"
+#include "optick.h"
 
 
 namespace sie
@@ -46,6 +47,7 @@ void ThreadedTaskGraphExecutor::prepareForExecution(int thread_num)
 
 ThreadedTaskGraphExecutor::ThreadResult ThreadedTaskGraphExecutor::doThread(int thread_id)
 {
+    OPTICK_EVENT()
     CompiledTaskGraph & __restrict graph = *graphPtr;
     const uint32_t maxFailedGroups = 8;
     const uint32_t maxFailedSubGroups = 32;
@@ -334,6 +336,9 @@ SimpleThreadPool::~SimpleThreadPool()
 
 void SimpleThreadPool::exec(SimpleThreadPool* self, int thread_id)
 {
+    char threadName[128];
+    sprintf_s(threadName, 128, "WorkerThread_%i", thread_id);
+    OPTICK_THREAD(threadName)
     sie::logger::debug("worker", "startup %i", thread_id);
     std::vector<TaskFnPtr> taskQueue;
     while (self->running)

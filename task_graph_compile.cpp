@@ -53,7 +53,7 @@ void TaskGraph::addResource(uint32_t task, uint64_t resId, bool write)
 
 bool TaskGraph::validateAndNormalize(CompiledTaskGraph &compiled)
 {
-    logger::debug("graph-build", "building graph");
+    logger::debug("compile", "building graph");
     // directed graph
     BaseGraph taskGraph;
     taskGraph.resize(allNodes.size());
@@ -110,7 +110,7 @@ bool TaskGraph::validateAndNormalize(CompiledTaskGraph &compiled)
     if (!isValid)
         return false;
 
-    logger::debug("graph-build", "normalizing graph");
+    logger::debug("compile", "normalizing graph");
     // normalize order
     for (uint32_t v = 0; v < allNodes.size(); v++)
     {
@@ -126,7 +126,7 @@ bool TaskGraph::validateAndNormalize(CompiledTaskGraph &compiled)
     }
 
     // build groups
-    logger::debug("graph-build", "building groups & subgroups");
+    logger::debug("compile", "building groups & subgroups");
     struct SubgroupData
     {
         uint64_t mask;
@@ -179,7 +179,7 @@ bool TaskGraph::validateAndNormalize(CompiledTaskGraph &compiled)
     // merge subgroups
     for (GroupData &group : groups)
     {
-        logger::debug("graph-build", "merging subgroups");
+        logger::debug("compile", "merging subgroups");
         group.subgroupCnt = group.subgroups.size();
 
         auto calcLockingConst = [&] (uint32_t sg1, uint32_t sg2) -> std::pair<int, int>
@@ -190,7 +190,7 @@ bool TaskGraph::validateAndNormalize(CompiledTaskGraph &compiled)
             int lockedTaskCnt1 = 0;
             int lockedTaskCnt2 = 0;
             int lockedTaskCntU = 0;
-            if constexpr (true)
+            if constexpr (false)
             {
                 iter_set_bits_span_var([&] (uint32_t v, bool e1, bool e2){
                     if (e1)
@@ -215,7 +215,7 @@ bool TaskGraph::validateAndNormalize(CompiledTaskGraph &compiled)
             return {lockingCost1 + lockingCost2, lockingCostU};
         };
 
-        logger::debug("graph-build", "  initial cost calc");
+        logger::debug("compile", "  initial cost calc");
         group.subgroupsLockingCost.resize(group.subgroups.size() * group.subgroups.size());
         for (uint32_t i1 = 0; i1 < group.subgroups.size(); i1++)
             for (uint32_t i2 = i1 + 1; i2 < group.subgroups.size(); i2++)
@@ -307,7 +307,7 @@ bool TaskGraph::validateAndNormalize(CompiledTaskGraph &compiled)
                 }
             }
 
-            logger::debug("graph-build", "  remaining %i", group.subgroupCnt);
+            logger::debug("compile", "  remaining %i", group.subgroupCnt);
             if (anyMergedTrivially)
                 continue;
             if (group.subgroupCnt <= 64)
@@ -315,7 +315,7 @@ bool TaskGraph::validateAndNormalize(CompiledTaskGraph &compiled)
             if (minMergePair.first >= 0)
             {
                 mergeThreshold = minMergeCost;
-                // logger::debug("graph-build", "merged by min cost %i <- %i cost=%i", maxPair.first, maxPair.second, int(minParallelCost));
+                // logger::debug("compile", "merged by min cost %i <- %i cost=%i", maxPair.first, maxPair.second, int(minParallelCost));
                 mergeSubgroups(minMergePair.first, minMergePair.second);
             }
         }
