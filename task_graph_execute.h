@@ -6,9 +6,9 @@
 #include <functional>
 
 #include "task_graph.h"
+#include "logger.h"
 
-
-namespace sie
+namespace si::tg
 {
 
 struct CompiledTaskGraph
@@ -64,9 +64,7 @@ struct CompiledTaskGraph
         uint32_t groupId;
         uint32_t subGroupId;
 
-        TaskFnPtr task;
-        VarTaskFnPtr varTask;
-        void* taskUserData;
+        TaskData taskData;
         bool allowToRunInParallelWithItself;
 
         Task() = default;
@@ -77,11 +75,11 @@ struct CompiledTaskGraph
         }
     };
 
-    std::vector<TaskGroup> allGroups;
-    std::vector<TaskGroupState> allGroupsState;
-    std::vector<TaskSubGroup> allSubGroups;
-    std::vector<TaskSubGroupState> allSubGroupsState;
-    std::vector<Task> allTasks;
+    Vector<TaskGroup> allGroups;
+    Vector<TaskGroupState> allGroupsState;
+    Vector<TaskSubGroup> allSubGroups;
+    Vector<TaskSubGroupState> allSubGroupsState;
+    Vector<Task> allTasks;
 };
 
 struct ThreadedTaskGraphExecutor
@@ -195,22 +193,22 @@ private:
                 Evt != Event::THREAD_START_GROUP)
             {
                 if (sizeof...(args) == 0)
-                    logger::debug("exec", "[%i] %s", threadId, EVENT_NAMES[int(Evt)], int(args)...);
+                    sie::logger::debug("exec", "[%i] %s", threadId, EVENT_NAMES[int(Evt)], int(args)...);
                 else if (sizeof...(args) == 1)
-                    logger::debug("exec", "[%i] %s %i", threadId, EVENT_NAMES[int(Evt)], int(args)...);
+                    sie::logger::debug("exec", "[%i] %s %i", threadId, EVENT_NAMES[int(Evt)], int(args)...);
                 else if (sizeof...(args) == 2)
-                    logger::debug("exec", "[%i] %s %i %i", threadId, EVENT_NAMES[int(Evt)], int(args)...);
+                    sie::logger::debug("exec", "[%i] %s %i %i", threadId, EVENT_NAMES[int(Evt)], int(args)...);
                 else if (sizeof...(args) == 3)
-                    logger::debug("exec", "[%i] %s %i %i %i", threadId, EVENT_NAMES[int(Evt)], int(args)...);
+                    sie::logger::debug("exec", "[%i] %s %i %i %i", threadId, EVENT_NAMES[int(Evt)], int(args)...);
                 else if (sizeof...(args) == 4)
-                    logger::debug("exec", "[%i] %s %i %i %i %i", threadId, EVENT_NAMES[int(Evt)], int(args)...);
+                    sie::logger::debug("exec", "[%i] %s %i %i %i %i", threadId, EVENT_NAMES[int(Evt)], int(args)...);
             }
             eventCnt[int(Evt)] += v;
             if constexpr (Evt == Event::TASK_EXECUTE_START || Evt == Event::TASK_EXECUTE_END)
                 timedEvents.push_back(TimedEvent{ Evt, executor->curTimedEventIdx.fetch_add(1, std::memory_order_relaxed), args... });
         }
     };
-    std::vector<ThreadCtx> threadCtxArray;
+    Vector<ThreadCtx> threadCtxArray;
     std::atomic<int64_t> curTimedEventIdx;
 
     bool tryEnterSubgroup(ThreadCtx &ctx, uint32_t group_id, uint32_t subgroup_id, uint64_t &executing, bool loop);

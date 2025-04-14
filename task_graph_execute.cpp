@@ -5,10 +5,10 @@
 #include "optick.h"
 
 
-namespace sie
+namespace si::tg
 {
 
-using logger::debug;
+using sie::logger::debug;
 
 void ThreadedTaskGraphExecutor::prepareForExecution(int thread_num)
 {
@@ -70,7 +70,7 @@ ThreadedTaskGraphExecutor::ThreadResult ThreadedTaskGraphExecutor::doThread(int 
                 ctx.failedSubgroups = maxFailedSubGroups;
                 break;
             }
-            iter_set_bits(pending, [&] (uint32_t bit_idx) {
+            internal::iter_set_bits(pending, [&] (uint32_t bit_idx) {
                 uint32_t subgroupId = subGroupsStartIdx + bit_idx;
                 bool owned = tryEnterSubgroup(ctx, ctx.groupId, subgroupId, executingMask, false);
                 if (!owned)
@@ -200,9 +200,9 @@ bool ThreadedTaskGraphExecutor::doSubGroup(ThreadCtx & __restrict ctx, uint32_t 
             // (optionally) wake other threads
 
             int taskCnt = 1;
-            void* userData = task.taskUserData;
-            if (task.varTask)
-                taskCnt = task.varTask(userData);
+            void* userData = task.taskData.userData;
+            if (task.taskData.taskVarFn)
+                taskCnt = task.taskData.taskVarFn(userData);
             if (taskCnt < 2 || !task.allowToRunInParallelWithItself)
             {
                 ctx.addEvent<Event::TASK_EXECUTE_START>(taskCnt, taskId);
@@ -210,9 +210,9 @@ bool ThreadedTaskGraphExecutor::doSubGroup(ThreadCtx & __restrict ctx, uint32_t 
                 if (taskCnt > 1)
                 {
                     for (int i = taskCnt - 1; i >= 0; i--)
-                        task.task(userData, i);
+                        task.taskData.taskFn(userData, i);
                 }
-                else if (taskCnt == 1) task.task(userData, 0);
+                else if (taskCnt == 1) task.taskData.taskFn(userData, 0);
                 ctx.addEvent<Event::TASK_EXECUTE_END>(taskCnt, taskId);
                 afterTaskDone(ctx, taskId);
             }
@@ -240,7 +240,7 @@ bool ThreadedTaskGraphExecutor::doVarTask(ThreadCtx & __restrict ctx, uint32_t s
     CompiledTaskGraph::Task &task = graph.allTasks[task_id];
     ctx.addEvent<Event::TASK_VAR_EXECUTE>(1, task_id, var_task_idx);
     ctx.addEvent<Event::TASK_EXECUTE_START>(1, task_id);
-    task.task(task.taskUserData, int(var_task_idx));
+    task.taskData.taskFn(task.taskData.userData, int(var_task_idx));
     ctx.addEvent<Event::TASK_EXECUTE_END>(1, task_id);
 
     const int64_t remaining = graph.allSubGroupsState[subgroup_id].remainingVarTasks.fetch_sub(1, std::memory_order_acq_rel);
@@ -341,7 +341,6 @@ void SimpleThreadPool::exec(SimpleThreadPool* self, int thread_id)
     sprintf_s(threadName, 128, "WorkerThread_%i", thread_id);
     OPTICK_THREAD(threadName)
     sie::logger::debug("worker", "startup %i", thread_id);
-    std::vector<TaskFnPtr> taskQueue;
     while (self->running)
     {
         const ThreadedTaskGraphExecutor::ThreadResult result = self->executor->doThread(thread_id, [self] (int cnt) {

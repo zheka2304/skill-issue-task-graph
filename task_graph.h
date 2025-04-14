@@ -5,20 +5,25 @@
 #include <cstring>
 #include <cassert>
 #include <span>
-#include "logger.h"
+
+#include "task_graph_config.h"
+
+
+namespace si::tg::internal
+{
 
 template<typename F>
-static uint64_t iter_set_bits(uint64_t word, F &&f)
+uint64_t iter_set_bits(uint64_t word, F&& f, uint64_t offs = 0)
 {
     uint64_t cnt = 0;
     uint64_t idx = 0;
     while (word != 0)
     {
-        uint64_t s = __builtin_ctzll(word);
+        uint64_t s = SI_TG_FIRST_SET_BIT(word);
         idx += s;
         word >>= s;
-        assert(bool(word & 1u));
-        f(idx);
+        assert(bool(word &1u));
+        f(idx + offs);
         idx++;
         word >>= 1;
         cnt++;
@@ -26,112 +31,112 @@ static uint64_t iter_set_bits(uint64_t word, F &&f)
     return cnt;
 }
 
-template<typename Span, typename F>
-static uint64_t iter_set_bits_span(const Span &words, F &&f)
+inline uint64_t count_set_bits(uint64_t word)
 {
-    uint64_t cnt = 0;
-    uint64_t base = 0;
-    for (int i = 0; i < words.size(); i++)
-    {
-        uint64_t word = const_cast<uint64_t &>(words[i]);
-        uint64_t idx = base;
-        while (word != 0)
-        {
-            uint64_t s = __builtin_ctzll(word);
-            idx += s;
-            word >>= s;
-            assert(bool(word &1u));
-            f(idx);
-            idx++;
-            word >>= 1;
-            cnt++;
-        }
-        base += 64;
-    }
-    return cnt;
+    return SI_TG_COUNT_SET_BITS(word);
 }
 
-template<typename F, typename Span, typename ...Spans>
-static uint64_t iter_set_bits_span_var(F &&f, Span span, Spans ...spans)
-{
-    uint64_t cnt = 0;
-    uint64_t base = 0;
-    uint64_t size = span.size();
-    for (uint64_t i = 0; i < size; i++)
-    {
-        uint64_t idx = 0;
-        uint64_t word = span[i] | (spans[i] | ...);
-        while (word != 0)
-        {
-            uint64_t s = __builtin_ctzll(word);
-            idx += s;
-            word >>= s;
-            assert(bool(word & 1u));
-            f(base + idx, bool((const_cast<uint64_t&>(span[i]) >> idx) & 1u), bool((const_cast<uint64_t&>(spans[i]) >> idx) & 1u)...);
-            idx++;
-            word >>= 1;
-            cnt++;
-        }
-        base += 64;
-    }
-    return cnt;
 }
 
-static uint64_t count_set_bits(uint64_t word)
+namespace si::tg
 {
-    return __builtin_popcountll(word);
-}
+
+struct BaseGraphEdgesRef
+{
+    BaseGraphEdgesRef() = default;
+    explicit BaseGraphEdgesRef(uint64_t *data, uint32_t cnt) : data(data), cnt(cnt) {}
+    uint64_t *begin() const { return data; }
+    uint64_t *end() const { return data + cnt; }
+    uint64_t size() const { return cnt; }
+    uint64_t &operator[](uint32_t i) const { SI_TG_ASSERT(i < cnt); return data[i]; }
+
+    template<typename F>
+    void iter(F &&f) const
+    {
+        uint32_t offset = 0;
+        for (uint64_t word : *this)
+        {
+            internal::iter_set_bits(word, f, offset);
+            offset += 64u;
+        }
+    }
+
+    uint32_t count() const
+    {
+        uint32_t r = 0;
+        for (uint64_t w : *this)
+            r += internal::count_set_bits(w);
+        return r;
+    }
+    bool operator==(const BaseGraphEdgesRef &rhs) const
+    {
+        if (size() != rhs.size())
+            return false;
+        bool r = true;
+        for (int i = 0; i < size(); i++)
+            r &= data[i] == rhs.data[i];
+        return r;
+    }
+
+    size_t hash() const
+    {
+        size_t seed = size();
+        for (uint64_t x : *this)
+        {
+            x = ((x >> 16) ^ x) * 0x45d9f3b;
+            x = ((x >> 16) ^ x) * 0x45d9f3b;
+            x = (x >> 16) ^ x;
+            seed ^= x + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        }
+        return seed;
+    }
+private:
+    uint64_t *data;
+    uint32_t cnt;
+};
 
 struct BaseGraph
 {
-    static constexpr uint32_t INVALID_ID = ~0u;
+    BaseGraph() = default;
+    template<typename Allocator>
+    explicit BaseGraph(const Allocator &allocator) : connections(allocator), vertexFlags(allocator) {}
+    BaseGraph(const BaseGraph &rhs) = delete;
+    void operator=(const BaseGraph &rhs) = delete;
+    BaseGraph(BaseGraph &&rhs) { *this = std::move(rhs); }
 
-    int getVertexCount() const { return vertexCnt; }
-
-    struct EdgesRef
+    template<typename OtherT>
+    void copyFrom(const OtherT &rhs)
     {
-        EdgesRef() = default;
-        explicit EdgesRef(uint64_t *data, int cnt) : data(data, cnt) {}
-        template<typename F>
-        void iter(F &&f) { iter_set_bits_span(data, std::forward<F>(f)); }
-        std::span<uint64_t> getSpan() const { return data; }
-        int count() const
-        {
-            int cnt = 0;
-            for (uint64_t w : data)
-                cnt += count_set_bits(w);
-            return cnt;
-        }
+        connections = rhs.connections;
+        vertexCnt = rhs.vertexCnt;
+        wordCnt = rhs.wordCnt;
+        vertexFlags = rhs.vertexFlags;
+        vertexFlagCount = rhs.vertexFlagCount;
+    }
 
-        bool operator==(const EdgesRef &rhs) const
-        {
-            if (data.size() != rhs.data.size())
-                return false;
-            bool r = true;
-            for (int i = 0; i < data.size(); i++)
-                r &= data[i] == rhs.data[i];
-            return r;
-        }
-
-        bool operator<(const EdgesRef &rhs) const
-        {
-            if (data.size() != rhs.data.size())
-                return data.size() < rhs.data.size();
-            for (int i = 0; i < data.size(); i++)
-                if (data[i] != rhs.data[i])
-                    return data[i]<= rhs.data[i];
-            return false;
-        }
-    private:
-        std::span<uint64_t> data;
-    };
-
-    void resize(uint32_t newSize)
+    BaseGraph &operator=(BaseGraph &&rhs)
     {
+        connections = std::move(rhs.connections);
+        vertexCnt = std::exchange(rhs.vertexCnt, 0);
+        wordCnt = std::exchange(rhs.wordCnt, 0);
+        vertexFlags = std::move(rhs.vertexFlags);
+        vertexFlagCount = std::exchange(rhs.vertexFlagCount, 0);
+        return *this;
+    }
+
+    void clear() { resize(0); }
+
+
+    // vertex count
+    int32_t size() const { return vertexCnt; }
+
+    void resize(int newSize)
+    {
+        SI_TG_ASSERT(newSize >= 0);
         if (vertexCnt == newSize)
             return;
-        uint32_t oldWordCnt = (vertexCnt + 63u) / 64;
-        uint32_t newWordCnt = (newSize + 63u) / 64;
+        const uint32_t oldWordCnt = uint32_t((vertexCnt + 63u) / 64u);
+        const uint32_t newWordCnt = uint32_t((uint32_t(newSize) + 63u) / 64u);
         vertexFlags.resize(newSize * vertexFlagCount, 0);
         if (oldWordCnt == newWordCnt)
         {
@@ -164,7 +169,8 @@ struct BaseGraph
 
     void setConnected(uint32_t v1, uint32_t v2, bool set)
     {
-        uint64_t &word = connections[v1 * wordCnt + v2 / 64u];
+        SI_TG_ASSERT(v1 < vertexCnt && v2 < vertexCnt);
+        uint64_t &word = connections[uint32_t(v1) * wordCnt + uint32_t(v2) / 64u];
         uint64_t bit = uint64_t(1) << uint64_t(v2 % 64u);
         if (set)
             word |= bit;
@@ -180,12 +186,18 @@ struct BaseGraph
 
     bool isConnected(uint32_t v1, uint32_t v2) const
     {
+        SI_TG_ASSERT(v1 < vertexCnt && v2 < vertexCnt);
         uint64_t word = connections[v1 * wordCnt + v2 / 64u];
         uint64_t bit = uint64_t(1) << uint64_t(v2 % 64u);
         return (word & bit) != 0;
     }
 
-    EdgesRef getEdges(uint32_t v1) { return EdgesRef(connections.data() + v1 * wordCnt, wordCnt); }
+    BaseGraphEdgesRef getEdges(uint32_t v1)
+    {
+        SI_TG_ASSERT(v1 < vertexCnt);
+        return BaseGraphEdgesRef(connections.data() + v1 * wordCnt, wordCnt);
+    }
+
     template<typename F>
     void iterEdges(uint32_t v1, F &&f) { getEdges(v1).iter(std::forward<F>(f)); }
 
@@ -201,6 +213,8 @@ struct BaseGraph
 
     void setFlag(uint32_t idx, uint32_t flag, bool set)
     {
+        SI_TG_ASSERT(idx < vertexCnt);
+        SI_TG_ASSERT(flag < vertexFlagCount);
         idx = idx * vertexFlagCount + flag;
         uint64_t &word = vertexFlags[idx / 64u];
         uint64_t bit = uint64_t(1) << uint64_t(idx % 64u);
@@ -212,48 +226,29 @@ struct BaseGraph
 
     void setAllFlags(uint32_t flag, bool set)
     {
+        SI_TG_ASSERT(flag < vertexFlagCount);
         for (uint32_t idx = 0; idx < vertexCnt; idx++)
             setFlag(idx, flag, set);
     }
 
     bool getFlag(uint32_t idx, uint32_t flag) const
     {
+        SI_TG_ASSERT(idx < vertexCnt);
+        SI_TG_ASSERT(flag < vertexFlagCount);
         idx = idx * vertexFlagCount + flag;
         return bool(vertexFlags[idx / 64u] & (uint64_t(1) << uint64_t(idx % 64u)));
     }
 
-    BaseGraph() = default;
-    BaseGraph(const BaseGraph &rhs) = delete;
-    void operator=(const BaseGraph &rhs) = delete;
-    BaseGraph(BaseGraph &&rhs) { *this = std::move(rhs); }
-    void copyFrom(const BaseGraph &rhs)
-    {
-        connections = rhs.connections;
-        vertexCnt = rhs.vertexCnt;
-        wordCnt = rhs.wordCnt;
-        vertexFlags = rhs.vertexFlags;
-        vertexFlagCount = rhs.vertexFlagCount;
-    }
-    BaseGraph &operator=(BaseGraph &&rhs)
-    {
-        connections = std::move(rhs.connections);
-        vertexCnt = std::exchange(rhs.vertexCnt, 0);
-        wordCnt = std::exchange(rhs.wordCnt, 0);
-        vertexFlags = std::move(rhs.vertexFlags);
-        vertexFlagCount = std::exchange(rhs.vertexFlagCount, 0);
-        return *this;
-    }
-
 private:
-    std::vector<uint64_t> connections;
+    Vector<uint64_t> connections;
     uint32_t vertexCnt = 0;
-    uint64_t wordCnt = 0;
-    std::vector<uint64_t> vertexFlags;
+    uint32_t wordCnt = 0;
+    Vector<uint64_t> vertexFlags;
     uint32_t vertexFlagCount = 0;
 };
 
-template<typename F>
-void base_graph_dfs(BaseGraph &graph, uint32_t v, uint32_t visited_flag, F &&f)
+template<typename F, typename BaseGraphT>
+void base_graph_dfs(BaseGraphT &graph, uint32_t v, uint32_t visited_flag, F &&f)
 {
     if (graph.getFlag(v, visited_flag))
         return;
@@ -265,71 +260,153 @@ void base_graph_dfs(BaseGraph &graph, uint32_t v, uint32_t visited_flag, F &&f)
     });
 }
 
-namespace sie
+struct TaskId
 {
+    static constexpr uint32_t INVALID_ID_VAL = ~uint32_t(0);
 
-struct TaskGraph;
-struct CompiledTaskGraph;
-using TaskFnPtr = void (*)(void*, int);
-using VarTaskFnPtr = int (*)(void*);
+    TaskId() = default;
+    explicit TaskId(uint32_t id) : id(id) {}
+    bool operator==(TaskId rhs) const { return id == rhs.id; }
+    bool operator!=(TaskId rhs) const { return id != rhs.id; }
+    bool operator<(TaskId rhs) const { return id < rhs.id; }
+    explicit operator bool() const { return valid(); }
+    bool valid() const { return id != INVALID_ID_VAL; }
+    uint32_t value() const { return id; }
+
+private:
+    uint32_t id = INVALID_ID_VAL;
+};
+
+struct ResourceIdHash
+{
+    size_t operator()(uint64_t x) const { return x; }
+};
+
+enum class ResourceUsage : uint8_t
+{
+    NOT_USED = 0,
+    SHARED,
+    LOCKING
+};
+
+struct TaskData
+{
+    using VarTaskFnPtr = int (*)(void*);
+    using TaskFnPtr = void (*)(void*, int);
+
+    TaskFnPtr taskFn = nullptr;
+    VarTaskFnPtr taskVarFn = nullptr;
+    void* userData = nullptr;
+
+    bool valid() const { return taskFn != nullptr; }
+};
 
 struct TaskGraph
 {
-    static constexpr uint32_t INVALID_ID = ~0u;
-
-    struct ResourceRef { uint64_t id: 63, write: 1; };
-
-    struct TaskNode
+    TaskGraph() = default;
+    template<typename Allocator>
+    explicit TaskGraph(const Allocator &allocator) :
+        taskData(allocator), taskSubgraph(allocator), taskOrderGraph(allocator), taskResourceUsage(allocator) {}
+    TaskGraph(const TaskGraph &) = delete;
+    void operator=(const TaskGraph &) = delete;
+    TaskGraph(TaskGraph &&) = default;
+    TaskGraph &operator=(TaskGraph &&) = default;
+    void copyFrom(const TaskGraph &rhs)
     {
-        void addNext(uint32_t id);
-        void removeNext(uint32_t id);
+        taskData = rhs.taskData;
+        taskSubgraph = rhs.taskSubgraph;
+        taskResourceUsage = rhs.taskResourceUsage;
+        taskOrderGraph.copyFrom(rhs.taskOrderGraph);
+    }
 
-    public:
-        // stable
-        TaskFnPtr fn;
-        VarTaskFnPtr varFn;
-        void* userData;
-        std::vector<uint32_t> nextTasks;
-        std::vector<TaskGraph::ResourceRef> resources;
-    };
-
-    // Tasks, executed in sequence. Dependencies are needed only to start
-    struct Fiber
-    {
-        std::vector<uint32_t> dependencies;
-        std::vector<uint32_t> tasks;
-    };
+    TaskId addTask(const TaskData &data = {});
+    void setTaskData(TaskId task_id, const TaskData &data);
+    void setNext(TaskId task_id, TaskId next_id, bool set = true);
+    void setResourceUsage(TaskId task_id, uint64_t resource_id, ResourceUsage usage);
+    ResourceUsage getResourceUsage(TaskId task_id, uint64_t resource_id) const;
+    void clear();
 
 public:
-    uint32_t addTask();
-    void setTaskData(uint32_t task, TaskFnPtr fn, VarTaskFnPtr var_fn, void* data);
-    void setNext(uint32_t task, uint32_t next);
-    void addResource(uint32_t task, uint64_t resId, bool write);
+    Vector<TaskData> taskData;
+    Vector<const TaskGraph *> taskSubgraph;
+    BaseGraph taskOrderGraph;
+    struct TaskResourceUsageData
+    {
+        uint32_t task : 31;
+        uint32_t lockingBit : 1;
+    };
+    FlatHashMultiMap<uint64_t, TaskResourceUsageData, ResourceIdHash> taskResourceUsage;
+};
 
-    bool validateAndNormalize(CompiledTaskGraph &compiled);
 
-public:
-    std::vector<TaskNode> allNodes;
-    std::vector<Fiber> allFibers;
-    std::vector<uint32_t> entryFiberIds;
+struct PrebuiltTaskGraph
+{
+    Vector<TaskData> taskData;
+    BaseGraph taskGraph;
+    BaseGraph exclusionGraph;
+    Vector<uint32_t> cycleDetectStack;
+
+    PrebuiltTaskGraph() = default;
+    template<typename Allocator>
+    explicit PrebuiltTaskGraph(const Allocator &allocator) :
+            taskData(allocator), taskGraph(allocator), exclusionGraph(allocator), cycleDetectStack(allocator) {}
+};
+
+bool prebuild_task_graph(PrebuiltTaskGraph &prebuilt_graph, const TaskGraph &graph);
+
+
+struct CompiledTaskGraph;
+
+namespace strategy
+{
+
+struct MergeSubgroupsState
+{
+    struct MergeState
+    {
+        std::vector<int> sgPair;
+        int totalValue;
+        int pairCnt;
+    };
+    struct SubgroupData
+    {
+        uint64_t mask = 0;
+        int subgroupIdx = 0;
+        FixedVector<uint32_t, 1, true> tasks;
+    };
+    struct GroupData
+    {
+        int subgroupCnt = 0;
+        FixedVector<SubgroupData, 64, true> subgroups;
+        BaseGraph subgroupExclusionGraph;
+    };
+    struct TaskData
+    {
+        uint32_t remapTaskId = ~uint32_t(0);
+        int depsCnt = 0;
+        bool isPendingOnStart = false;
+        bool allowToRunInParallelWithItself = false;
+        Vector<uint32_t> nextTasks;
+    };
+    Vector<GroupData> groups;
+    Vector<TaskData> allTasks;
+
+    // kept to copy allocator from it
+    BaseGraph subgroupExclusionGraph;
+    FixedVector<SubgroupData, 64, true> subgroups;
+    FixedVector<uint32_t, 1, true> tasks;
+    Vector<uint32_t> nextTasks;
+    MergeState mergeState;
+
+    MergeSubgroupsState() = default;
+    template<typename Allocator>
+    explicit MergeSubgroupsState(const Allocator &allocator) :
+            groups(allocator), allTasks(allocator), subgroupExclusionGraph(allocator),
+            subgroups(allocator), tasks(allocator), nextTasks(allocator), mergeState(allocator)  {}
 };
 
 }
 
-template<>
-struct std::hash<BaseGraph::EdgesRef>
-{
-    size_t operator()(const BaseGraph::EdgesRef &val) const
-    {
-        size_t seed = val.getSpan().size();
-        for (uint64_t x : val.getSpan())
-        {
-            x = ((x >> 16) ^ x) * 0x45d9f3b;
-            x = ((x >> 16) ^ x) * 0x45d9f3b;
-            x = (x >> 16) ^ x;
-            seed ^= x + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-        }
-        return seed;
-    }
-};
+bool compile_task_graph(CompiledTaskGraph &compiled_graph, PrebuiltTaskGraph &prebuilt_graph, strategy::MergeSubgroupsState &state);
 
+}

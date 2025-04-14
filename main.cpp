@@ -1,8 +1,6 @@
 #include <iostream>
 #include <atomic>
 #include <vector>
-#include <thread>
-#include <condition_variable>
 #include <cassert>
 
 #include "logger.h"
@@ -11,25 +9,38 @@
 
 
 using sie::logger::debug;
-using namespace sie;
+using namespace si::tg;
 
-void append_random_task_graph(TaskGraph &graph, int sz, int res_ofs)
+[[clang::optnone]]
+void append_random_task_graph(si::tg::TaskGraph &graph, int sz, int res_ofs)
 {
-    uint32_t offset = graph.allNodes.size();
-    graph.allNodes.resize(offset + 1000);
-    for (int i = offset; i < offset + sz; i++)
+    std::vector<TaskId> tasks;
+    tasks.reserve(sz);
+    for (int i = 0; i < sz; i++)
     {
-        graph.setTaskData(i, +[] (void* data, int idx)
-        {
-            OPTICK_EVENT("test_task");
-            printf("    test task %i (%i)", (int) (intptr_t) data, idx);
-        }, nullptr, (void*) i);
-        if (i >= graph.allNodes.size() - 1)
+        TaskId id = graph.addTask({
+            .taskFn = +[](void* data, int idx) {
+                OPTICK_EVENT("test_task");
+                printf("    test task %i (%i)", (int) (intptr_t) data, idx);
+            },
+            .taskVarFn = nullptr,
+            .userData = (void*) i
+        });
+        tasks.push_back(id);
+    }
+    for (int i = 0; i < sz; i++)
+    {
+        if (i >= sz - 1)
             continue;
-        for (int n = 0; n < 2; n++)
-            graph.setNext(i, i + 1 + rand() % (graph.allNodes.size() - i - 1));
+        for (int n = 0; n < 0; n++)
+            graph.setNext(tasks[i], tasks[i + 1 + rand() % (sz - i - 1)]);
         for (int n = 0; n < 5; n++)
-            graph.addResource(i,  res_ofs+ rand() % 200, rand() % 5 == 0);
+        {
+            uint64_t res = res_ofs + rand() % 200;
+            si::tg::ResourceUsage usage = rand() % 5 == 0 ? si::tg::ResourceUsage::LOCKING : si::tg::ResourceUsage::SHARED;
+            graph.setResourceUsage(tasks[i], res, usage);
+            assert(graph.getResourceUsage(tasks[i], res) == usage);
+        }
     }
 }
 
@@ -71,24 +82,13 @@ int main()
     OPTICK_START_CAPTURE();
 
     TaskGraph graph;
-    if (1)
-        init_random_task_graph(graph);
-    else
-    {
-        auto t0 = graph.addTask();
-        auto t1 = graph.addTask();
-        auto t2 = graph.addTask();
-        auto t3 = graph.addTask();
-        auto t4 = graph.addTask();
-        auto t5= graph.addTask();
-        graph.setNext(t0, t1);
-        graph.setNext(t1, t2);
-        graph.setNext(t1, t3);
-        graph.setNext(t3, t4);
-    }
+    init_random_task_graph(graph);
 
+    PrebuiltTaskGraph prebuiltGraph;
+    assert(si::tg::prebuild_task_graph(prebuiltGraph, graph));
+    si::tg::strategy::MergeSubgroupsState state;
     CompiledTaskGraph compiledGraph;
-    assert(graph.validateAndNormalize(compiledGraph));
+    assert(si::tg::compile_task_graph(compiledGraph, prebuiltGraph, state));
     execute_task_graph(compiledGraph);
 
     OPTICK_STOP_CAPTURE();
