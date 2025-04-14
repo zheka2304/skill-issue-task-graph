@@ -33,7 +33,7 @@ void SimpleThreadPool::shutdownThreads()
 void SimpleThreadPool::executeAndWait(si::tg::CompiledTaskGraph* graph, bool use_wait)
 {
     doneEvent.word.store(0, std::memory_order_relaxed);
-    executor.graphPtr = graph;
+    executor.setGraph(graph);
 #if !TP_SKIP_EXECUTION
     executor.prepareForExecution(threads.size());
 #endif
@@ -93,8 +93,8 @@ void SimpleThreadPool::doThread(int thread_id)
             constexpr int MAX_ATTEMPTS = 32;
             for (int i = 0; i < MAX_ATTEMPTS; i++)
             {
-                const ThreadedTaskGraphExecutor::ThreadResult result = executor.doThread(thread_id);
-                end = result != ThreadedTaskGraphExecutor::ThreadResult::WAIT;
+                const ThreadResult result = executor.doThread(thread_id);
+                end = result != ThreadResult::WAIT;
                 if (end)
                     break;
             }

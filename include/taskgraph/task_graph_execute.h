@@ -100,17 +100,15 @@ struct CompiledTaskGraph
     {}
 };
 
+enum class ThreadResult : uint8_t
+{
+    WAIT = 0,
+    EXIT
+};
 
 struct ThreadedTaskGraphExecutor
 {
-    CompiledTaskGraph *graphPtr;
-
-    enum class ThreadResult : uint8_t
-    {
-        WAIT = 0,
-        EXIT
-    };
-
+    void setGraph(CompiledTaskGraph *graph) { graphPtr = graph; }
     void prepareForExecution(int thread_num);
     void setWakeCallback(int thread_id, WakeThreadsCallback wake_callback);
     ThreadResult doThread(int thread_id);
@@ -179,6 +177,7 @@ struct ThreadedTaskGraphExecutor
     void getAllTimedEvents(Vector<TimedEvent> &events) const;
 
 private:
+    CompiledTaskGraph *graphPtr;
 
     struct ThreadCtx
     {
@@ -197,6 +196,7 @@ private:
         WakeThreadsCallback wakeCb;
         ThreadedTaskGraphExecutor *executor;
 
+        Vector<uint32_t> shuffledGroupsOrder;
         Vector<uint64_t> subGroupMasksToExecuteNext;
 
 #if SI_TG_ENABLE_DEBUG_STAT_EVENTS

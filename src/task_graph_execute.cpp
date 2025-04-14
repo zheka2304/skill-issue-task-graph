@@ -127,15 +127,30 @@ void ThreadedTaskGraphExecutor::prepareForExecution(int thread_num)
     SI_TG_ASSERT(graphPtr);
     SI_TG_ASSERT(graphPtr->isValid);
     SI_TG_PROFILE_INTERNAL("prepare_execution")
+    CompiledTaskGraph & SI_TG_RESTRICT graph = *graphPtr;
     sleepingThreadsMask.store(0, std::memory_order_relaxed);
-    threadCtxArray.resize(0);
+    const int prevThreadCtxSize = threadCtxArray.size();
     threadCtxArray.resize(thread_num);
     for (int i = 0; i < int(threadCtxArray.size()); i++)
     {
-        threadCtxArray[i].executor = this;
-        threadCtxArray[i].threadId = i;
+        SI_TG_ASSERT(!threadCtxArray[i].isSubgroupOwned);
+        threadCtxArray[i].numFailedGroups = 0;
+        threadCtxArray[i].numFailedSubgroups = 0;
+        threadCtxArray[i].executingMask = 0;
+        threadCtxArray[i].wakeCb = WakeThreadsCallback();
+        auto &sgOrder = threadCtxArray[i].shuffledGroupsOrder;
+        if (sgOrder.size() != graph.allGroups.size())
+        {
+            sgOrder.resize(graph.allGroups.size());
+            for (uint32_t j = 0; j < sgOrder.size(); j++)
+                sgOrder[j] = j;
+        }
     }
-    CompiledTaskGraph & SI_TG_RESTRICT graph = *graphPtr;
+    for (int i = prevThreadCtxSize; i < int(threadCtxArray.size()); i++)
+    {
+        threadCtxArray[i].threadId = i;
+        threadCtxArray[i].rndSeed = i;
+    }
     for (CompiledTaskGraph::Task &task : graph.allTasks)
     {
         task.state.store(task.isPendingOnStart ? CompiledTaskGraph::Task::STATE_PENDING : CompiledTaskGraph::Task::STATE_NONE, std::memory_order_relaxed);
@@ -164,9 +179,10 @@ void ThreadedTaskGraphExecutor::setWakeCallback(int thread_id, si::tg::WakeThrea
     threadCtxArray[thread_id].wakeCb = std::move(wake_callback);
 }
 
-ThreadedTaskGraphExecutor::ThreadResult ThreadedTaskGraphExecutor::doThread(int thread_id)
+ThreadResult ThreadedTaskGraphExecutor::doThread(int thread_id)
 {
     ThreadCtx & SI_TG_RESTRICT ctx = threadCtxArray[thread_id];
+    auto & SI_TG_RESTRICT gOrder = ctx.shuffledGroupsOrder;
     const bool hasWakeCb = bool(ctx.wakeCb);
     if (hasWakeCb)
         sleepingThreadsMask.fetch_and(~(uint64_t(1) << uint64_t(thread_id)), std::memory_order_relaxed);
@@ -175,6 +191,9 @@ ThreadedTaskGraphExecutor::ThreadResult ThreadedTaskGraphExecutor::doThread(int 
     const uint32_t maxFailedGroups = graph.allGroups.size() + 1;
     const uint32_t maxFailedSubGroups = 64;
 
+    uint32_t gOrderIdx = 0;
+    for (uint32_t j = 0; j < graph.allGroups.size(); j++)
+        std::swap(gOrder[j], gOrder[ctx.nextRnd() % graph.allGroups.size()]);
     ctx.numFailedGroups = 0;
     while (ctx.numFailedGroups < maxFailedGroups)
     {
@@ -200,8 +219,8 @@ ThreadedTaskGraphExecutor::ThreadResult ThreadedTaskGraphExecutor::doThread(int 
         if (ctx.numFailedSubgroups >= maxFailedSubGroups)
         {
             ctx.numFailedGroups++;
-            ctx.groupId = ctx.nextRnd();
-            ctx.groupId %= graph.allGroups.size();
+            gOrderIdx = (gOrderIdx + 1) % gOrder.size();
+            ctx.groupId = gOrder[gOrderIdx];
             continue;
         }
     }
